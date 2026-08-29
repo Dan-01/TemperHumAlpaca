@@ -9,9 +9,9 @@ Initial target hardware:
 - Tested Windows HID interface: `MI_01`
 - Known compatible TEMPerX/TEMPerHUM protocol family
 
-## v0.4
+## v0.4.0
 
-v0.4 adds a local observatory dashboard and calibration workflow on top of the unattended v0.3 Windows service:
+v0.4.0 adds a local observatory dashboard and calibration workflow on top of the unattended Windows service:
 
 - live temperature, relative humidity and dew point
 - dew-point margin (`temperature - dew point`)
@@ -20,6 +20,7 @@ v0.4 adds a local observatory dashboard and calibration workflow on top of the u
 - calibration against a co-located reference thermometer/hygrometer
 - automatic calculation and persistence of calibration offsets
 - manual offset editing
+- tagged GitHub Releases with a self-contained Windows ZIP and SHA-256 checksum
 
 The dashboard is deliberately bound to loopback only because it can modify calibration settings:
 
@@ -28,6 +29,12 @@ http://localhost:11112/dashboard
 ```
 
 The Alpaca API remains on port `11111` and continues to work independently if the dashboard is unavailable.
+
+## Releases
+
+Stable versions are published from `master` as tagged GitHub Releases. Download the latest `TemperHumAlpaca-vX.Y.Z-win-x64.zip` from the repository's **Releases** page rather than using a development Actions artifact.
+
+`develop` remains the active development branch. A release is produced when validated `develop` changes are promoted to `master`; the release workflow reads the version from `TemperHumAlpaca.csproj`, creates the corresponding `vX.Y.Z` tag, packages the self-contained Windows build and publishes the release assets.
 
 ## Windows service / unattended operation
 
@@ -65,7 +72,7 @@ The server also provides:
 
 ## Recommended installation on the astro PC
 
-1. Download the latest `TemperHumAlpaca-win-x64` artifact from GitHub Actions.
+1. Download the latest Windows ZIP from **GitHub Releases**.
 2. Extract it anywhere convenient.
 3. Close the vendor TEMPerHUM application.
 4. Open **PowerShell as Administrator** in the extracted folder.
@@ -199,7 +206,7 @@ dotnet restore src/TemperHumAlpaca/TemperHumAlpaca.csproj
 dotnet build src/TemperHumAlpaca/TemperHumAlpaca.csproj -c Release
 ```
 
-CI launches the packaged executable and smoke-tests both the Alpaca API and the local dashboard before uploading the artifact.
+CI launches the packaged executable and smoke-tests both the Alpaca API and the local dashboard. The release workflow repeats the packaged-binary validation before publishing a release.
 
 ## Protocol notes
 
@@ -212,8 +219,8 @@ The implementation was informed by the publicly documented behaviour in the MIT-
 - **v0.1** — Windows HID readout and calibration
 - **v0.2** — ASCOM Alpaca `ObservingConditions` HTTP API and discovery
 - **v0.3** — Windows service/autostart and unattended USB reconnect recovery
-- **v0.4** — local environment dashboard and reference-sensor calibration workflow
-- **v0.5** — tagged releases, broader conformance tests and packaging polish
+- **v0.4** — local environment dashboard, reference-sensor calibration and tagged release packaging
+- **v0.5** — broader ASCOM conformance tests and packaging/configuration polish
 
 ## License
 
