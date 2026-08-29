@@ -39,7 +39,7 @@ jobs:
         shell: pwsh
         run: Copy-Item src/TemperHumAlpaca/temperhum.json publish/win-x64/temperhum.json -Force
 
-      - name: Smoke test Alpaca server
+      - name: Smoke test Alpaca server and dashboard
         shell: pwsh
         run: |
           $configPath = Join-Path $PWD 'publish/win-x64/temperhum.json'
@@ -52,9 +52,10 @@ jobs:
 
           try {
             $ready = $false
-            for ($i = 0; $i -lt 15; $i++) {
+            for ($i = 0; $i -lt 20; $i++) {
               try {
                 $management = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/configureddevices' -TimeoutSec 2
+                $dashboard = Invoke-WebRequest 'http://127.0.0.1:11112/dashboard' -UseBasicParsing -TimeoutSec 2
                 $ready = $true
                 break
               } catch {
@@ -62,8 +63,11 @@ jobs:
               }
             }
 
-            if (-not $ready) { throw 'Alpaca HTTP server did not become ready.' }
+            if (-not $ready) { throw 'Alpaca HTTP server or dashboard did not become ready.' }
             if ($management.Value[0].DeviceType -ne 'ObservingConditions') { throw 'ConfiguredDevices did not expose ObservingConditions.' }
+            if ($dashboard.StatusCode -ne 200) { throw 'Dashboard did not return HTTP 200.' }
+            if ($dashboard.Content -notmatch 'Dew margin') { throw 'Dashboard is missing dew margin display.' }
+            if ($dashboard.Content -notmatch 'Calibrate against reference thermometer') { throw 'Dashboard is missing calibration controls.' }
 
             $version = Invoke-RestMethod 'http://127.0.0.1:11111/api/v1/observingconditions/0/interfaceversion?ClientTransactionID=42'
             if ($version.Value -ne 2) { throw 'Unexpected ObservingConditions InterfaceVersion.' }
