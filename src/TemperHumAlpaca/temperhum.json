@@ -1,5 +1,10 @@
 {
   "temperatureOffsetC": 0.0,
   "humidityOffsetPercent": 0.0,
-  "pollIntervalSeconds": 1
+  "pollIntervalSeconds": 1,
+  "alpacaPort": 11111,
+  "discoveryEnabled": true,
+  "discoveryPort": 32227,
+  "autoConnect": true,
+  "uniqueId": ""
 }
