@@ -9,9 +9,29 @@ Initial target hardware:
 - Tested Windows HID interface: `MI_01`
 - Known compatible TEMPerX/TEMPerHUM protocol family
 
-## v0.3
+## v0.4
 
-v0.3 adds unattended Windows operation on top of the working v0.2 Alpaca bridge:
+v0.4 adds a local observatory dashboard and calibration workflow on top of the unattended v0.3 Windows service:
+
+- live temperature, relative humidity and dew point
+- dew-point margin (`temperature - dew point`)
+- reading age, raw USB readings, connection state and last sensor error
+- manual refresh and USB reconnect controls
+- calibration against a co-located reference thermometer/hygrometer
+- automatic calculation and persistence of calibration offsets
+- manual offset editing
+
+The dashboard is deliberately bound to loopback only because it can modify calibration settings:
+
+```text
+http://localhost:11112/dashboard
+```
+
+The Alpaca API remains on port `11111` and continues to work independently if the dashboard is unavailable.
+
+## Windows service / unattended operation
+
+The bridge supports:
 
 - install/uninstall as a native Windows Service
 - automatic startup with Windows
@@ -41,7 +61,6 @@ The server also provides:
 
 - Alpaca management endpoints
 - IPv4 Alpaca discovery on UDP `32227`
-- HTTP setup/status page
 - persistent Alpaca UniqueID generated on first run
 
 ## Recommended installation on the astro PC
@@ -86,6 +105,27 @@ Remove the service with an Administrator PowerShell:
 
 Uninstalling the service leaves `C:\ProgramData\TemperHumAlpaca` in place so configuration is not accidentally lost.
 
+## Calibration workflow
+
+Place a trusted reference thermometer/hygrometer immediately beside the USB sensor and allow both devices to stabilise. Then open:
+
+```text
+http://localhost:11112/dashboard
+```
+
+Enter the reference temperature and humidity under **Calibrate against reference thermometer**. TemperHumAlpaca derives the current raw USB values by removing any existing offsets, calculates new offsets from the reference readings, saves them to `temperhum.json`, and refreshes the live reading.
+
+This means repeated calibration does not compound previous corrections.
+
+For a single reference observation:
+
+```text
+temperature offset = reference temperature - raw USB temperature
+humidity offset    = reference humidity - raw USB humidity
+```
+
+Prefer several stabilised side-by-side checks before treating a large offset as permanent.
+
 ## Interactive operation
 
 You can still run the Alpaca bridge directly for troubleshooting:
@@ -94,16 +134,16 @@ You can still run the Alpaca bridge directly for troubleshooting:
 .\TemperHumAlpaca.exe
 ```
 
-By default the server listens on:
+By default:
 
 - Alpaca HTTP: `http://localhost:11111`
-- setup/status page: `http://localhost:11111/setup`
+- local dashboard: `http://localhost:11112/dashboard`
 - discovery: UDP `32227`
 - device: `ObservingConditions` number `0`
 
 N.I.N.A. supports direct ASCOM Alpaca discovery. In N.I.N.A.'s Weather / Observing Conditions device selection, refresh/discover Alpaca devices and select **TEMPerHUM Observing Conditions**.
 
-Windows may display a firewall prompt the first time the interactive server listens for Alpaca traffic. Allow it on your private network if you want discovery/network access.
+Windows may display a firewall prompt the first time the interactive Alpaca server listens for network traffic. Allow it on your private network if you want Alpaca discovery/network access. The calibration dashboard itself remains loopback-only.
 
 ## USB diagnostics
 
@@ -125,7 +165,7 @@ To list matching HID interfaces:
 .\TemperHumAlpaca.exe --list
 ```
 
-## Configuration and calibration
+## Configuration
 
 The configuration file contains:
 
@@ -136,6 +176,7 @@ The configuration file contains:
   "pollIntervalSeconds": 1,
   "reconnectIntervalSeconds": 5,
   "alpacaPort": 11111,
+  "dashboardPort": 11112,
   "discoveryEnabled": true,
   "discoveryPort": 32227,
   "autoConnect": true,
@@ -158,6 +199,8 @@ dotnet restore src/TemperHumAlpaca/TemperHumAlpaca.csproj
 dotnet build src/TemperHumAlpaca/TemperHumAlpaca.csproj -c Release
 ```
 
+CI launches the packaged executable and smoke-tests both the Alpaca API and the local dashboard before uploading the artifact.
+
 ## Protocol notes
 
 The `413D:2107` identifier is shared by more than one PCsensor product, so VID/PID alone is not sufficient to identify a sensor. The tested Windows unit exposes two HID interfaces; `MI_01` has 9-byte input/output reports and carries the TEMPerHUM measurements.
@@ -169,7 +212,8 @@ The implementation was informed by the publicly documented behaviour in the MIT-
 - **v0.1** — Windows HID readout and calibration
 - **v0.2** — ASCOM Alpaca `ObservingConditions` HTTP API and discovery
 - **v0.3** — Windows service/autostart and unattended USB reconnect recovery
-- **v0.4** — improved configuration/status UX and broader conformance testing
+- **v0.4** — local environment dashboard and reference-sensor calibration workflow
+- **v0.5** — tagged releases, broader conformance tests and packaging polish
 
 ## License
 
