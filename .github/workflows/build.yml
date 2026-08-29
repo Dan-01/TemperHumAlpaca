@@ -39,6 +39,44 @@ jobs:
         shell: pwsh
         run: Copy-Item src/TemperHumAlpaca/temperhum.json publish/win-x64/temperhum.json -Force
 
+      - name: Smoke test Alpaca server
+        shell: pwsh
+        run: |
+          $configPath = Join-Path $PWD 'publish/win-x64/temperhum.json'
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          $config.autoConnect = $false
+          $config | ConvertTo-Json | Set-Content $configPath
+
+          $exe = Join-Path $PWD 'publish/win-x64/TemperHumAlpaca.exe'
+          $process = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 15; $i++) {
+              try {
+                $management = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/configureddevices' -TimeoutSec 2
+                $ready = $true
+                break
+              } catch {
+                Start-Sleep -Milliseconds 500
+              }
+            }
+
+            if (-not $ready) { throw 'Alpaca HTTP server did not become ready.' }
+            if ($management.Value[0].DeviceType -ne 'ObservingConditions') { throw 'ConfiguredDevices did not expose ObservingConditions.' }
+
+            $version = Invoke-RestMethod 'http://127.0.0.1:11111/api/v1/observingconditions/0/interfaceversion?ClientTransactionID=42'
+            if ($version.Value -ne 2) { throw 'Unexpected ObservingConditions InterfaceVersion.' }
+            if ($version.ClientTransactionID -ne 42) { throw 'ClientTransactionID was not echoed.' }
+
+            $temperature = Invoke-RestMethod 'http://127.0.0.1:11111/api/v1/observingconditions/0/temperature'
+            if ($temperature.ErrorNumber -ne 1031) { throw 'Disconnected temperature request did not return ASCOM NotConnected.' }
+          }
+          finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+            Copy-Item src/TemperHumAlpaca/temperhum.json $configPath -Force
+          }
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v6
         with:
