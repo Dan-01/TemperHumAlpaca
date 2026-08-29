@@ -53,7 +53,7 @@ internal static class AlpacaServer
             {
                 ServerName = "TemperHumAlpaca",
                 Manufacturer = "TemperHumAlpaca open-source project",
-                ManufacturerVersion = "0.2",
+                ManufacturerVersion = AppInfo.Version,
                 Location = Environment.MachineName
             }));
 
@@ -109,10 +109,10 @@ internal static class AlpacaServer
             HandleGet(request, () => "PCsensor TEMPerHUM USB temperature/humidity sensor"));
 
         device.MapGet("/driverinfo", (HttpRequest request) =>
-            HandleGet(request, () => "TemperHumAlpaca v0.2 - TEMPerHUM to ASCOM Alpaca ObservingConditions"));
+            HandleGet(request, () => $"TemperHumAlpaca v{AppInfo.Version} - TEMPerHUM to ASCOM Alpaca ObservingConditions"));
 
         device.MapGet("/driverversion", (HttpRequest request) =>
-            HandleGet(request, () => "0.2"));
+            HandleGet(request, () => AppInfo.Version));
 
         device.MapGet("/interfaceversion", (HttpRequest request) =>
             HandleGet(request, () => 2));
@@ -206,7 +206,7 @@ internal static class AlpacaServer
         await using var discovery = new AlpacaDiscoveryResponder(config.AlpacaPort, config.DiscoveryPort, config.DiscoveryEnabled);
         discovery.Start();
 
-        Console.WriteLine("TemperHumAlpaca v0.2");
+        Console.WriteLine($"TemperHumAlpaca v{AppInfo.Version}");
         Console.WriteLine($"Alpaca HTTP:       http://localhost:{config.AlpacaPort}/setup");
         Console.WriteLine($"ObservingConditions device: 0 (InterfaceVersion 2)");
         Console.WriteLine(config.DiscoveryEnabled
@@ -422,6 +422,7 @@ internal static class AlpacaServer
         </head><body>
         <h1>TemperHumAlpaca</h1>
         <p>ASCOM Alpaca ObservingConditions server for PCsensor TEMPerHUM/TEMPerX USB sensors.</p>
+        <p><strong>Version:</strong> {{AppInfo.Version}}</p>
         <p><strong>Status:</strong> {{measurement}}</p>
         {{error}}
         <p><strong>Alpaca port:</strong> {{config.AlpacaPort}}<br>
