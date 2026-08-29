@@ -1,0 +1,5 @@
+{
+  "temperatureOffsetC": 0.0,
+  "humidityOffsetPercent": 0.0,
+  "pollIntervalSeconds": 1
+}
