@@ -3,6 +3,11 @@ using System.Text.Json;
 var app = new TemperHumApp();
 return await app.RunAsync(args);
 
+internal static class AppInfo
+{
+    public const string Version = "0.4.0";
+}
+
 internal sealed class TemperHumApp
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -60,7 +65,7 @@ internal sealed class TemperHumApp
 
     private static int RunOnce(AppConfig config)
     {
-        Console.WriteLine("TemperHumAlpaca v0.3 USB test");
+        Console.WriteLine($"TemperHumAlpaca v{AppInfo.Version} USB test");
         Console.WriteLine($"Target: VID {DeviceConstants.VendorId:X4} / PID {DeviceConstants.ProductId:X4}");
         Console.WriteLine("Close the vendor TEMPerHUM application before running this tool.\n");
 
@@ -81,7 +86,7 @@ internal sealed class TemperHumApp
 
     private static async Task<int> RunMonitorAsync(AppConfig config)
     {
-        Console.WriteLine("TemperHumAlpaca v0.3 USB monitor");
+        Console.WriteLine($"TemperHumAlpaca v{AppInfo.Version} USB monitor");
         Console.WriteLine("Press Ctrl+C to stop.\n");
 
         using var cts = CreateConsoleCancellation();
@@ -128,9 +133,12 @@ internal sealed class TemperHumApp
             }
         }
 
+        using var serverCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var dashboardTask = RunDashboardSafeAsync(sensor, config, serverCts.Token);
+
         try
         {
-            await AlpacaServer.RunAsync(sensor, config, cancellationToken);
+            await AlpacaServer.RunAsync(sensor, config, serverCts.Token);
             return 0;
         }
         catch (OperationCanceledException)
@@ -141,6 +149,27 @@ internal sealed class TemperHumApp
         {
             Console.Error.WriteLine($"ERROR: Alpaca server failed: {ex.Message}");
             return 1;
+        }
+        finally
+        {
+            serverCts.Cancel();
+            await dashboardTask;
+        }
+    }
+
+    private static async Task RunDashboardSafeAsync(SensorService sensor, AppConfig config, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await DashboardServer.RunAsync(sensor, config, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            // Dashboard failure must never take the Alpaca weather device offline.
+            Console.Error.WriteLine($"WARNING: Dashboard unavailable: {ex.Message}");
         }
     }
 
@@ -231,6 +260,7 @@ internal sealed class AppConfig
     public int PollIntervalSeconds { get; set; } = 1;
     public int ReconnectIntervalSeconds { get; set; } = 5;
     public int AlpacaPort { get; set; } = 11111;
+    public int DashboardPort { get; set; } = 11112;
     public bool DiscoveryEnabled { get; set; } = true;
     public int DiscoveryPort { get; set; } = 32227;
     public bool AutoConnect { get; set; } = true;
