@@ -15,6 +15,22 @@ internal sealed class TemperHumApp
     public async Task<int> RunAsync(string[] args)
     {
         var options = Arguments.Parse(args);
+
+        if (options.InstallService)
+        {
+            return await WindowsServiceSupport.InstallAsync();
+        }
+
+        if (options.UninstallService)
+        {
+            return await WindowsServiceSupport.UninstallAsync();
+        }
+
+        if (options.ServiceStatus)
+        {
+            return WindowsServiceSupport.PrintStatus();
+        }
+
         var config = LoadConfig();
 
         if (options.List)
@@ -33,12 +49,18 @@ internal sealed class TemperHumApp
             return await RunMonitorAsync(config);
         }
 
-        return await RunServerAsync(config);
+        if (options.Service)
+        {
+            return WindowsServiceSupport.Run(cancellationToken => RunServerAsync(config, cancellationToken));
+        }
+
+        using var cts = CreateConsoleCancellation();
+        return await RunServerAsync(config, cts.Token);
     }
 
     private static int RunOnce(AppConfig config)
     {
-        Console.WriteLine("TemperHumAlpaca v0.2 USB test");
+        Console.WriteLine("TemperHumAlpaca v0.3 USB test");
         Console.WriteLine($"Target: VID {DeviceConstants.VendorId:X4} / PID {DeviceConstants.ProductId:X4}");
         Console.WriteLine("Close the vendor TEMPerHUM application before running this tool.\n");
 
@@ -59,7 +81,7 @@ internal sealed class TemperHumApp
 
     private static async Task<int> RunMonitorAsync(AppConfig config)
     {
-        Console.WriteLine("TemperHumAlpaca v0.2 USB monitor");
+        Console.WriteLine("TemperHumAlpaca v0.3 USB monitor");
         Console.WriteLine("Press Ctrl+C to stop.\n");
 
         using var cts = CreateConsoleCancellation();
@@ -87,28 +109,28 @@ internal sealed class TemperHumApp
         }
     }
 
-    private static async Task<int> RunServerAsync(AppConfig config)
+    internal static async Task<int> RunServerAsync(AppConfig config, CancellationToken cancellationToken)
     {
-        using var cts = CreateConsoleCancellation();
         await using var sensor = new SensorService(config);
+        sensor.StartAutoReconnect();
 
         if (config.AutoConnect)
         {
             try
             {
-                await sensor.ConnectNowAsync(cts.Token);
+                await sensor.ConnectNowAsync(cancellationToken);
             }
             catch (Exception ex)
             {
-                // The Alpaca server is still useful while disconnected because N.I.N.A.
-                // can discover it and initiate a later connection attempt.
+                // Keep the Alpaca server alive. The recovery loop will retry the USB
+                // connection, which is important during Windows boot and USB re-plugs.
                 Console.Error.WriteLine($"WARNING: Initial sensor connection failed: {ex.Message}");
             }
         }
 
         try
         {
-            await AlpacaServer.RunAsync(sensor, config, cts.Token);
+            await AlpacaServer.RunAsync(sensor, config, cancellationToken);
             return 0;
         }
         catch (OperationCanceledException)
@@ -207,6 +229,7 @@ internal sealed class AppConfig
     public double TemperatureOffsetC { get; set; }
     public double HumidityOffsetPercent { get; set; }
     public int PollIntervalSeconds { get; set; } = 1;
+    public int ReconnectIntervalSeconds { get; set; } = 5;
     public int AlpacaPort { get; set; } = 11111;
     public bool DiscoveryEnabled { get; set; } = true;
     public int DiscoveryPort { get; set; } = 32227;
@@ -219,11 +242,22 @@ internal sealed class Arguments
     public bool Once { get; init; }
     public bool List { get; init; }
     public bool Monitor { get; init; }
+    public bool Service { get; init; }
+    public bool InstallService { get; init; }
+    public bool UninstallService { get; init; }
+    public bool ServiceStatus { get; init; }
 
     public static Arguments Parse(string[] args) => new()
     {
-        Once = args.Any(a => a.Equals("--once", StringComparison.OrdinalIgnoreCase)),
-        List = args.Any(a => a.Equals("--list", StringComparison.OrdinalIgnoreCase)),
-        Monitor = args.Any(a => a.Equals("--monitor", StringComparison.OrdinalIgnoreCase))
+        Once = Has(args, "--once"),
+        List = Has(args, "--list"),
+        Monitor = Has(args, "--monitor"),
+        Service = Has(args, "--service"),
+        InstallService = Has(args, "--install-service"),
+        UninstallService = Has(args, "--uninstall-service"),
+        ServiceStatus = Has(args, "--service-status")
     };
+
+    private static bool Has(string[] args, string value) =>
+        args.Any(a => a.Equals(value, StringComparison.OrdinalIgnoreCase));
 }
