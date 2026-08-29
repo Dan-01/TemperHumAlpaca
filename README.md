@@ -58,6 +58,8 @@ Corrections are applied before dew point is calculated.
 
 Development builds require the .NET 8 SDK, but the release artifact is published as a self-contained `win-x64` executable so the target mini-PC does not need the SDK or runtime installed.
 
+GitHub Actions builds every push to `develop` and uploads a `TemperHumAlpaca-win-x64` artifact.
+
 ```powershell
 dotnet restore src/TemperHumAlpaca/TemperHumAlpaca.csproj
 dotnet build src/TemperHumAlpaca/TemperHumAlpaca.csproj -c Release
