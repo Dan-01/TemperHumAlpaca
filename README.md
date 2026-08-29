@@ -1,37 +1,70 @@
 # TemperHumAlpaca
 
-A small Windows utility for reading selected PCsensor TEMPerHUM/TEMPerX USB HID sensors and, in a later milestone, exposing their measurements as an ASCOM Alpaca `ObservingConditions` device.
+A small, self-contained Windows utility that reads selected PCsensor TEMPerHUM/TEMPerX USB HID sensors and exposes temperature, relative humidity and calculated dew point as an ASCOM Alpaca `ObservingConditions` device.
 
-The initial target hardware is:
+Initial target hardware:
 
 - USB VID: `0x413D`
 - USB PID: `0x2107`
-- Known firmware: `TEMPerX_V3.1`
-- Preferred HID interface on Windows: `MI_01`
+- Tested Windows HID interface: `MI_01`
+- Known compatible TEMPerX/TEMPerHUM protocol family
 
-## Current milestone: v0.1 USB reader
+## v0.2
 
-v0.1 deliberately does **not** implement ASCOM Alpaca yet. Its job is to prove that a self-contained Windows executable can reliably read the sensor on the acquisition mini-PC without Visual Studio, Visual C++ build tools, Python, Node, or a .NET SDK installed there.
+v0.2 adds an ASCOM Alpaca `ObservingConditions` server around the proven v0.1 HID reader.
 
-It reads:
+Implemented ObservingConditions values:
 
-- ambient temperature
-- relative humidity
-- calculated dew point
-- optional temperature and humidity calibration offsets
+- Temperature (degrees C)
+- Humidity (% RH)
+- DewPoint (degrees C, calculated after calibration)
+- AveragePeriod (`0.0`, instantaneous readings)
+- SensorDescription
+- TimeSinceLastUpdate
+- Refresh
+- DeviceState
+- Connected / Connecting / Connect / Disconnect
+
+Unsupported weather values such as pressure, cloud cover, rain and wind correctly return the ASCOM `NotImplemented` error rather than fabricated data.
+
+The server also provides:
+
+- Alpaca management endpoints
+- IPv4 Alpaca discovery on UDP `32227`
+- HTTP setup/status page
+- persistent Alpaca UniqueID generated on first run
 
 ## Running on the astro PC
 
-1. Download the `TemperHumAlpaca-win-x64` artifact produced by GitHub Actions.
-2. Extract it to a folder on the Windows mini-PC.
-3. Close the vendor TEMPerHUM application so it does not hold the HID device open.
-4. Run `TemperHumAlpaca.exe`.
-5. Press `Ctrl+C` to stop.
+1. Download the latest `TemperHumAlpaca-win-x64` artifact from GitHub Actions.
+2. Extract it to a permanent folder on the Windows mini-PC.
+3. Close the vendor TEMPerHUM application so it does not hold the HID interface open.
+4. Run `TemperHumAlpaca.exe` with no arguments.
+5. Leave the process running while N.I.N.A. is using the weather device.
 
-For a single reading:
+By default the server listens on:
+
+- Alpaca HTTP: `http://localhost:11111`
+- setup/status page: `http://localhost:11111/setup`
+- discovery: UDP `32227`
+- device: `ObservingConditions` number `0`
+
+N.I.N.A. supports direct ASCOM Alpaca discovery. In N.I.N.A.'s Weather / Observing Conditions device selection, refresh/discover Alpaca devices and select **TEMPerHUM Observing Conditions**.
+
+Windows may display a firewall prompt the first time the server listens for Alpaca traffic. Allow it on your private network if you want discovery/network access.
+
+## USB diagnostics
+
+For a single direct sensor reading without starting Alpaca:
 
 ```powershell
 .\TemperHumAlpaca.exe --once
+```
+
+To continuously monitor direct sensor readings:
+
+```powershell
+.\TemperHumAlpaca.exe --monitor
 ```
 
 To list matching HID interfaces:
@@ -40,25 +73,30 @@ To list matching HID interfaces:
 .\TemperHumAlpaca.exe --list
 ```
 
-## Calibration
+## Configuration and calibration
 
-Copy/edit `temperhum.json` beside the executable:
+Edit `temperhum.json` beside the executable:
 
 ```json
 {
   "temperatureOffsetC": 0.0,
   "humidityOffsetPercent": 0.0,
-  "pollIntervalSeconds": 1
+  "pollIntervalSeconds": 1,
+  "alpacaPort": 11111,
+  "discoveryEnabled": true,
+  "discoveryPort": 32227,
+  "autoConnect": true,
+  "uniqueId": ""
 }
 ```
 
-Corrections are applied before dew point is calculated.
+On first run, an empty `uniqueId` is replaced with a generated GUID and written back to this file. Keep that value stable for the installation so Alpaca clients can re-identify the device.
+
+Temperature and humidity offsets are applied before dew point is calculated.
 
 ## Building
 
-Development builds require the .NET 8 SDK, but the release artifact is published as a self-contained `win-x64` executable so the target mini-PC does not need the SDK or runtime installed.
-
-GitHub Actions builds every push to `develop` and uploads a `TemperHumAlpaca-win-x64` artifact.
+Development builds require the .NET 8 SDK, but GitHub Actions publishes a self-contained `win-x64` executable. The target mini-PC does **not** need Visual Studio, Visual C++ build tools, Python, Node, the .NET SDK, or a separately installed .NET runtime.
 
 ```powershell
 dotnet restore src/TemperHumAlpaca/TemperHumAlpaca.csproj
@@ -67,15 +105,15 @@ dotnet build src/TemperHumAlpaca/TemperHumAlpaca.csproj -c Release
 
 ## Protocol notes
 
-The `413D:2107` identifier is shared by more than one PCsensor product, so VID/PID alone is not sufficient to identify a sensor. This project initially targets the TEMPerHUM/TEMPerX layout observed on `TEMPerX_V3.1`, where interface 1 accepts an 8-byte HID query and returns temperature and humidity as signed big-endian hundredths.
+The `413D:2107` identifier is shared by more than one PCsensor product, so VID/PID alone is not sufficient to identify a sensor. The tested Windows unit exposes two HID interfaces; `MI_01` has 9-byte input/output reports and carries the TEMPerHUM measurements.
 
-The implementation was informed by the publicly documented behaviour in the MIT-licensed [`urwen/temper`](https://github.com/urwen/temper) project and the [`mreymann/temperx`](https://github.com/mreymann/temperx) project. No external native executable is bundled.
+The implementation was informed by the publicly documented behaviour in the MIT-licensed [`urwen/temper`](https://github.com/urwen/temper) and [`mreymann/temperx`](https://github.com/mreymann/temperx) projects. No external native executable is bundled.
 
 ## Roadmap
 
-- **v0.1** — robust Windows HID readout and calibration
+- **v0.1** — Windows HID readout and calibration
 - **v0.2** — ASCOM Alpaca `ObservingConditions` HTTP API and discovery
-- **v0.3** — Windows service/autostart, health/status and configuration UX
+- **v0.3** — Windows service/autostart, improved configuration UX and conformance testing
 
 ## License
 
