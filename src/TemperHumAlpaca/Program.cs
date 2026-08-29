@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 
 var app = new TemperHumApp();
@@ -5,7 +6,12 @@ return await app.RunAsync(args);
 
 internal static class AppInfo
 {
-    public const string Version = "0.4.0";
+    public static string Version { get; } =
+        typeof(AppInfo).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion.Split('+')[0]
+        ?? typeof(AppInfo).Assembly.GetName().Version?.ToString(3)
+        ?? "0.0.0";
 }
 
 internal sealed class TemperHumApp
