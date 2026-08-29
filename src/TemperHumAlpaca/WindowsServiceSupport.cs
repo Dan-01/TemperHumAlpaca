@@ -211,6 +211,24 @@ internal static class WindowsServiceSupport
         {
             _cts = new CancellationTokenSource();
             _serverTask = Task.Run(() => _server(_cts.Token));
+
+            _ = _serverTask.ContinueWith(task =>
+            {
+                if (_cts?.IsCancellationRequested == true)
+                {
+                    return;
+                }
+
+                ExitCode = task.Status == TaskStatus.RanToCompletion ? task.Result : 1;
+                try
+                {
+                    Stop();
+                }
+                catch
+                {
+                    // SCM recovery settings handle an unexpected process/service stop.
+                }
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
 
         protected override void OnStop() => StopServer();
