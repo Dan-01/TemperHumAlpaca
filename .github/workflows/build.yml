@@ -1,0 +1,95 @@
+name: build
+
+on:
+  push:
+    branches: [develop, master]
+  pull_request:
+    branches: [develop, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-win-x64:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore src/TemperHumAlpaca/TemperHumAlpaca.csproj
+
+      - name: Publish self-contained win-x64
+        run: >-
+          dotnet publish src/TemperHumAlpaca/TemperHumAlpaca.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -o publish/win-x64
+
+      - name: Copy sample configuration
+        shell: pwsh
+        run: Copy-Item src/TemperHumAlpaca/temperhum.json publish/win-x64/temperhum.json -Force
+
+      - name: Smoke test Alpaca server and dashboard
+        shell: pwsh
+        run: |
+          $configPath = Join-Path $PWD 'publish/win-x64/temperhum.json'
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          $config.autoConnect = $false
+          $config | ConvertTo-Json | Set-Content $configPath
+
+          $exe = Join-Path $PWD 'publish/win-x64/TemperHumAlpaca.exe'
+          $process = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 20; $i++) {
+              try {
+                $management = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/configureddevices' -TimeoutSec 2
+                $dashboard = Invoke-WebRequest 'http://127.0.0.1:11112/dashboard' -UseBasicParsing -TimeoutSec 2
+                $ready = $true
+                break
+              } catch {
+                Start-Sleep -Milliseconds 500
+              }
+            }
+
+            if (-not $ready) { throw 'Alpaca HTTP server or dashboard did not become ready.' }
+            if ($management.Value[0].DeviceType -ne 'ObservingConditions') { throw 'ConfiguredDevices did not expose ObservingConditions.' }
+            if ($dashboard.StatusCode -ne 200) { throw 'Dashboard did not return HTTP 200.' }
+            if ($dashboard.Content -notmatch 'Dew margin') { throw 'Dashboard is missing dew margin display.' }
+            if ($dashboard.Content -notmatch 'Calibrate against reference thermometer') { throw 'Dashboard is missing calibration controls.' }
+
+            $description = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/description'
+            if ($description.Value.ManufacturerVersion -ne '0.4.0') { throw 'Management version did not match 0.4.0.' }
+
+            $driverVersion = Invoke-RestMethod 'http://127.0.0.1:11111/api/v1/observingconditions/0/driverversion'
+            if ($driverVersion.Value -ne '0.4.0') { throw 'DriverVersion did not match 0.4.0.' }
+
+            $version = Invoke-RestMethod 'http://127.0.0.1:11111/api/v1/observingconditions/0/interfaceversion?ClientTransactionID=42'
+            if ($version.Value -ne 2) { throw 'Unexpected ObservingConditions InterfaceVersion.' }
+            if ($version.ClientTransactionID -ne 42) { throw 'ClientTransactionID was not echoed.' }
+
+            $temperature = Invoke-RestMethod 'http://127.0.0.1:11111/api/v1/observingconditions/0/temperature'
+            if ($temperature.ErrorNumber -ne 1031) { throw 'Disconnected temperature request did not return ASCOM NotConnected.' }
+          }
+          finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+            Copy-Item src/TemperHumAlpaca/temperhum.json $configPath -Force
+          }
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: TemperHumAlpaca-win-x64
+          path: publish/win-x64/
+          if-no-files-found: error

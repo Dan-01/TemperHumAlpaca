@@ -1,0 +1,115 @@
+name: release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-win-x64:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Read release version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$project = Get-Content 'src/TemperHumAlpaca/TemperHumAlpaca.csproj'
+          $version = [string]$project.Project.PropertyGroup.Version
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'Project <Version> is missing.' }
+          if ($version -notmatch '^\d+\.\d+\.\d+([-.+][0-9A-Za-z.-]+)?$') { throw "Invalid release version: $version" }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Restore
+        run: dotnet restore src/TemperHumAlpaca/TemperHumAlpaca.csproj
+
+      - name: Publish self-contained win-x64
+        run: >-
+          dotnet publish src/TemperHumAlpaca/TemperHumAlpaca.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -o publish/win-x64
+
+      - name: Copy sample configuration
+        shell: pwsh
+        run: Copy-Item src/TemperHumAlpaca/temperhum.json publish/win-x64/temperhum.json -Force
+
+      - name: Smoke test release binary
+        shell: pwsh
+        run: |
+          $configPath = Join-Path $PWD 'publish/win-x64/temperhum.json'
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          $config.autoConnect = $false
+          $config | ConvertTo-Json | Set-Content $configPath
+
+          $exe = Join-Path $PWD 'publish/win-x64/TemperHumAlpaca.exe'
+          $process = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 20; $i++) {
+              try {
+                $description = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/description' -TimeoutSec 2
+                $driverVersion = Invoke-RestMethod 'http://127.0.0.1:11111/api/v1/observingconditions/0/driverversion' -TimeoutSec 2
+                $dashboard = Invoke-WebRequest 'http://127.0.0.1:11112/dashboard' -UseBasicParsing -TimeoutSec 2
+                $ready = $true
+                break
+              } catch {
+                Start-Sleep -Milliseconds 500
+              }
+            }
+
+            if (-not $ready) { throw 'Release binary did not become ready.' }
+            if ($description.Value.ManufacturerVersion -ne '${{ steps.version.outputs.version }}') { throw 'Management version does not match project version.' }
+            if ($driverVersion.Value -ne '${{ steps.version.outputs.version }}') { throw 'DriverVersion does not match project version.' }
+            if ($dashboard.StatusCode -ne 200) { throw 'Dashboard did not return HTTP 200.' }
+          }
+          finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+            Copy-Item src/TemperHumAlpaca/temperhum.json $configPath -Force
+          }
+
+      - name: Package release
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $zip = "TemperHumAlpaca-v$version-win-x64.zip"
+          Compress-Archive -Path 'publish/win-x64/*' -DestinationPath $zip -Force
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $zip" | Set-Content "$zip.sha256"
+
+      - name: Create tagged GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+          $version = '${{ steps.version.outputs.version }}'
+          $zip = "TemperHumAlpaca-v$version-win-x64.zip"
+
+          gh release view $tag --repo '${{ github.repository }}' *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag already exists; nothing to create."
+            exit 0
+          }
+
+          gh release create $tag $zip "$zip.sha256" `
+            --repo '${{ github.repository }}' `
+            --target '${{ github.sha }}' `
+            --title "TemperHumAlpaca $tag" `
+            --generate-notes `
+            --latest

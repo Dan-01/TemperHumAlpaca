@@ -1,0 +1,12 @@
+{
+  "temperatureOffsetC": 0.0,
+  "humidityOffsetPercent": 0.0,
+  "pollIntervalSeconds": 1,
+  "reconnectIntervalSeconds": 5,
+  "alpacaPort": 11111,
+  "dashboardPort": 11112,
+  "discoveryEnabled": true,
+  "discoveryPort": 32227,
+  "autoConnect": true,
+  "uniqueId": ""
+}
