@@ -9,11 +9,21 @@ Initial target hardware:
 - Tested Windows HID interface: `MI_01`
 - Known compatible TEMPerX/TEMPerHUM protocol family
 
-## v0.2
+## v0.3
 
-v0.2 adds an ASCOM Alpaca `ObservingConditions` server around the proven v0.1 HID reader.
+v0.3 adds unattended Windows operation on top of the working v0.2 Alpaca bridge:
 
-Implemented ObservingConditions values:
+- install/uninstall as a native Windows Service
+- automatic startup with Windows
+- service restart recovery configured through the Windows Service Control Manager
+- automatic TEMPerHUM USB reconnect attempts after boot-time delays or later USB disconnect/reconnect events
+- installed calibration and Alpaca UniqueID preserved across upgrades
+
+The service runs the same Alpaca server used in interactive console mode.
+
+## ObservingConditions support
+
+Implemented values:
 
 - Temperature (degrees C)
 - Humidity (% RH)
@@ -34,13 +44,55 @@ The server also provides:
 - HTTP setup/status page
 - persistent Alpaca UniqueID generated on first run
 
-## Running on the astro PC
+## Recommended installation on the astro PC
 
 1. Download the latest `TemperHumAlpaca-win-x64` artifact from GitHub Actions.
-2. Extract it to a permanent folder on the Windows mini-PC.
-3. Close the vendor TEMPerHUM application so it does not hold the HID interface open.
-4. Run `TemperHumAlpaca.exe` with no arguments.
-5. Leave the process running while N.I.N.A. is using the weather device.
+2. Extract it anywhere convenient.
+3. Close the vendor TEMPerHUM application.
+4. Open **PowerShell as Administrator** in the extracted folder.
+5. Run:
+
+```powershell
+.\TemperHumAlpaca.exe --install-service
+```
+
+The installer copies the executable to:
+
+```text
+C:\ProgramData\TemperHumAlpaca
+```
+
+and registers **TemperHumAlpaca ASCOM Alpaca Bridge** as an automatically-starting Windows Service. It starts the service immediately.
+
+The installed configuration lives at:
+
+```text
+C:\ProgramData\TemperHumAlpaca\temperhum.json
+```
+
+That file is deliberately preserved when you install a newer build so calibration offsets and the Alpaca UniqueID remain stable.
+
+Check service state with:
+
+```powershell
+.\TemperHumAlpaca.exe --service-status
+```
+
+Remove the service with an Administrator PowerShell:
+
+```powershell
+.\TemperHumAlpaca.exe --uninstall-service
+```
+
+Uninstalling the service leaves `C:\ProgramData\TemperHumAlpaca` in place so configuration is not accidentally lost.
+
+## Interactive operation
+
+You can still run the Alpaca bridge directly for troubleshooting:
+
+```powershell
+.\TemperHumAlpaca.exe
+```
 
 By default the server listens on:
 
@@ -51,7 +103,7 @@ By default the server listens on:
 
 N.I.N.A. supports direct ASCOM Alpaca discovery. In N.I.N.A.'s Weather / Observing Conditions device selection, refresh/discover Alpaca devices and select **TEMPerHUM Observing Conditions**.
 
-Windows may display a firewall prompt the first time the server listens for Alpaca traffic. Allow it on your private network if you want discovery/network access.
+Windows may display a firewall prompt the first time the interactive server listens for Alpaca traffic. Allow it on your private network if you want discovery/network access.
 
 ## USB diagnostics
 
@@ -75,13 +127,14 @@ To list matching HID interfaces:
 
 ## Configuration and calibration
 
-Edit `temperhum.json` beside the executable:
+The configuration file contains:
 
 ```json
 {
   "temperatureOffsetC": 0.0,
   "humidityOffsetPercent": 0.0,
   "pollIntervalSeconds": 1,
+  "reconnectIntervalSeconds": 5,
   "alpacaPort": 11111,
   "discoveryEnabled": true,
   "discoveryPort": 32227,
@@ -90,7 +143,9 @@ Edit `temperhum.json` beside the executable:
 }
 ```
 
-On first run, an empty `uniqueId` is replaced with a generated GUID and written back to this file. Keep that value stable for the installation so Alpaca clients can re-identify the device.
+`reconnectIntervalSeconds` controls how often the bridge retries a desired USB connection after the sensor is unavailable. A deliberate disconnect from an Alpaca client stays disconnected; reconnect recovery is for a connection that is intended to be active.
+
+On first run, an empty `uniqueId` is replaced with a generated GUID and written back to the file. Keep that value stable for the installation so Alpaca clients can re-identify the device.
 
 Temperature and humidity offsets are applied before dew point is calculated.
 
@@ -113,7 +168,8 @@ The implementation was informed by the publicly documented behaviour in the MIT-
 
 - **v0.1** — Windows HID readout and calibration
 - **v0.2** — ASCOM Alpaca `ObservingConditions` HTTP API and discovery
-- **v0.3** — Windows service/autostart, improved configuration UX and conformance testing
+- **v0.3** — Windows service/autostart and unattended USB reconnect recovery
+- **v0.4** — improved configuration/status UX and broader conformance testing
 
 ## License
 
