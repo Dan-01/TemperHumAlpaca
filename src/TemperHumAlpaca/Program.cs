@@ -2,11 +2,14 @@ using System.Buffers.Binary;
 using System.Text.Json;
 using HidSharp;
 
-const int VendorId = 0x413D;
-const int ProductId = 0x2107;
-
 var app = new TemperHumApp();
 return await app.RunAsync(args);
+
+internal static class DeviceConstants
+{
+    public const int VendorId = 0x413D;
+    public const int ProductId = 0x2107;
+}
 
 internal sealed class TemperHumApp
 {
@@ -28,7 +31,7 @@ internal sealed class TemperHumApp
         }
 
         Console.WriteLine("TemperHumAlpaca v0.1 USB reader");
-        Console.WriteLine($"Target: VID {VendorId:X4} / PID {ProductId:X4}");
+        Console.WriteLine($"Target: VID {DeviceConstants.VendorId:X4} / PID {DeviceConstants.ProductId:X4}");
         Console.WriteLine("Close the vendor TEMPerHUM application before running this tool.\n");
 
         using var cts = new CancellationTokenSource();
@@ -40,7 +43,7 @@ internal sealed class TemperHumApp
 
         try
         {
-            var reader = TemperHumReader.Open();
+            using var reader = TemperHumReader.Open();
             Console.WriteLine($"Opened HID interface: {reader.DevicePath}\n");
 
             do
@@ -99,10 +102,10 @@ internal sealed class TemperHumApp
 
     private static void ListDevices()
     {
-        var devices = DeviceList.Local.GetHidDevices(VendorId, ProductId).ToList();
+        var devices = DeviceList.Local.GetHidDevices(DeviceConstants.VendorId, DeviceConstants.ProductId).ToList();
         if (devices.Count == 0)
         {
-            Console.WriteLine($"No HID devices found for VID {VendorId:X4} / PID {ProductId:X4}.");
+            Console.WriteLine($"No HID devices found for VID {DeviceConstants.VendorId:X4} / PID {DeviceConstants.ProductId:X4}.");
             return;
         }
 
@@ -111,7 +114,9 @@ internal sealed class TemperHumApp
         {
             var device = devices[i];
             Console.WriteLine($"[{i}] {device.DevicePath}");
+#pragma warning disable CS0612
             Console.WriteLine($"    input={device.MaxInputReportLength}, output={device.MaxOutputReportLength}, feature={device.MaxFeatureReportLength}");
+#pragma warning restore CS0612
         }
     }
 }
@@ -135,17 +140,20 @@ internal sealed class TemperHumReader : IDisposable
 
     public static TemperHumReader Open()
     {
-        var devices = DeviceList.Local.GetHidDevices(VendorId, ProductId).ToList();
+        var devices = DeviceList.Local.GetHidDevices(DeviceConstants.VendorId, DeviceConstants.ProductId).ToList();
         if (devices.Count == 0)
         {
-            throw new InvalidOperationException($"No TEMPerHUM-compatible HID device found (VID {VendorId:X4}, PID {ProductId:X4}).");
+            throw new InvalidOperationException(
+                $"No TEMPerHUM-compatible HID device found (VID {DeviceConstants.VendorId:X4}, PID {DeviceConstants.ProductId:X4}).");
         }
 
         // Windows exposes this composite device through multiple HID interfaces.
         // The known TEMPerX/TEMPerHUM protocol lives on MI_01, so prefer it.
         var ordered = devices
             .OrderByDescending(d => d.DevicePath.Contains("mi_01", StringComparison.OrdinalIgnoreCase))
+#pragma warning disable CS0612
             .ThenByDescending(d => d.MaxInputReportLength >= 8 && d.MaxOutputReportLength >= 8)
+#pragma warning restore CS0612
             .ToList();
 
         foreach (var device in ordered)
@@ -163,7 +171,9 @@ internal sealed class TemperHumReader : IDisposable
 
     public Measurement ReadMeasurement()
     {
+#pragma warning disable CS0612
         var outputLength = Math.Max(_device.MaxOutputReportLength, MeasurementCommand.Length);
+#pragma warning restore CS0612
         var command = new byte[outputLength];
         Array.Copy(MeasurementCommand, command, MeasurementCommand.Length);
         _stream.Write(command);
@@ -175,7 +185,9 @@ internal sealed class TemperHumReader : IDisposable
         {
             try
             {
+#pragma warning disable CS0612
                 var buffer = new byte[Math.Max(_device.MaxInputReportLength, 8)];
+#pragma warning restore CS0612
                 var read = _stream.Read(buffer, 0, buffer.Length);
                 if (read <= 0)
                 {
@@ -209,12 +221,14 @@ internal sealed class TemperHumReader : IDisposable
 
         if (temperature is < -80 or > 100)
         {
-            throw new InvalidOperationException($"Implausible temperature decoded: {temperature:F2} °C. Raw: {Convert.ToHexString(data)}");
+            throw new InvalidOperationException(
+                $"Implausible temperature decoded: {temperature:F2} °C. Raw: {Convert.ToHexString(data)}");
         }
 
         if (humidity is < 0 or > 100)
         {
-            throw new InvalidOperationException($"Implausible humidity decoded: {humidity:F2} %RH. Raw: {Convert.ToHexString(data)}");
+            throw new InvalidOperationException(
+                $"Implausible humidity decoded: {humidity:F2} %RH. Raw: {Convert.ToHexString(data)}");
         }
 
         return new Measurement(temperature, humidity);
@@ -223,8 +237,7 @@ internal sealed class TemperHumReader : IDisposable
     private static ReadOnlySpan<byte> StripReportIdIfPresent(ReadOnlySpan<byte> report)
     {
         // HIDSharp includes the report-ID byte in reports. These devices commonly
-        // use report ID 0 or 1. The protocol payload itself begins 01 80 / data,
-        // so strip a leading zero only; retain a leading 01 because it can be real data.
+        // use report ID 0 or 1. Strip a leading zero only; a leading 01 can be payload.
         return report.Length > 8 && report[0] == 0x00 ? report[1..] : report;
     }
 
