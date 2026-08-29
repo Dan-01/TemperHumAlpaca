@@ -25,13 +25,17 @@ internal sealed class SensorService : IAsyncDisposable
     private SensorSnapshot? _snapshot;
     private CancellationTokenSource? _pollCts;
     private Task? _pollTask;
+    private CancellationTokenSource? _reconnectCts;
+    private Task? _reconnectTask;
     private bool _connected;
     private bool _connecting;
+    private bool _desiredConnected;
     private string? _lastError;
 
     public SensorService(AppConfig config)
     {
         _config = config;
+        _desiredConnected = config.AutoConnect;
     }
 
     public bool Connected
@@ -88,16 +92,28 @@ internal sealed class SensorService : IAsyncDisposable
         }
     }
 
-    public async Task ConnectNowAsync(CancellationToken cancellationToken = default)
+    public void StartAutoReconnect()
     {
         lock (_stateGate)
         {
-            if (_connected)
+            if (_reconnectTask is not null)
             {
                 return;
             }
 
-            if (_connecting)
+            _reconnectCts = new CancellationTokenSource();
+            var token = _reconnectCts.Token;
+            _reconnectTask = Task.Run(() => ReconnectLoopAsync(token), token);
+        }
+    }
+
+    public async Task ConnectNowAsync(CancellationToken cancellationToken = default)
+    {
+        lock (_stateGate)
+        {
+            _desiredConnected = true;
+
+            if (_connected || _connecting)
             {
                 return;
             }
@@ -112,22 +128,34 @@ internal sealed class SensorService : IAsyncDisposable
             reader = TemperHumReader.Open();
             var snapshot = await ReadSnapshotAsync(reader, cancellationToken);
 
-            CancellationTokenSource pollCts;
+            CancellationTokenSource? oldPollCts = null;
+            bool keepConnection;
             lock (_stateGate)
             {
-                _reader = reader;
-                reader = null;
-                _snapshot = snapshot;
-                _connected = true;
-                _connecting = false;
-                _lastError = null;
+                keepConnection = _desiredConnected;
+                if (!keepConnection)
+                {
+                    _connecting = false;
+                }
+                else
+                {
+                    _reader = reader;
+                    reader = null;
+                    _snapshot = snapshot;
+                    _connected = true;
+                    _connecting = false;
+                    _lastError = null;
 
-                _pollCts?.Cancel();
-                _pollCts?.Dispose();
-                pollCts = new CancellationTokenSource();
-                _pollCts = pollCts;
-                _pollTask = Task.Run(() => PollLoopAsync(pollCts.Token));
+                    oldPollCts = _pollCts;
+                    var pollCts = new CancellationTokenSource();
+                    _pollCts = pollCts;
+                    _pollTask = Task.Run(() => PollLoopAsync(pollCts.Token));
+                }
             }
+
+            oldPollCts?.Cancel();
+            oldPollCts?.Dispose();
+            reader?.Dispose();
         }
         catch (Exception ex)
         {
@@ -147,6 +175,7 @@ internal sealed class SensorService : IAsyncDisposable
     {
         lock (_stateGate)
         {
+            _desiredConnected = true;
             if (_connected || _connecting)
             {
                 return;
@@ -158,8 +187,6 @@ internal sealed class SensorService : IAsyncDisposable
 
         _ = Task.Run(async () =>
         {
-            // ConnectNowAsync expects to establish the Connecting state itself, so release
-            // the provisional state before entering it on the background task.
             lock (_stateGate)
             {
                 _connecting = false;
@@ -171,7 +198,8 @@ internal sealed class SensorService : IAsyncDisposable
             }
             catch
             {
-                // LastError is populated by ConnectNowAsync and surfaced in the status page.
+                // LastError is populated by ConnectNowAsync and the recovery loop
+                // will retry while the desired state remains connected.
             }
         });
     }
@@ -183,6 +211,8 @@ internal sealed class SensorService : IAsyncDisposable
 
         lock (_stateGate)
         {
+            _desiredConnected = false;
+
             if (!_connected && !_connecting)
             {
                 return;
@@ -196,7 +226,7 @@ internal sealed class SensorService : IAsyncDisposable
         }
 
         pollCts?.Cancel();
-        if (pollTask is not null)
+        if (pollTask is not null && Task.CurrentId != pollTask.Id)
         {
             try
             {
@@ -233,6 +263,8 @@ internal sealed class SensorService : IAsyncDisposable
     {
         lock (_stateGate)
         {
+            _desiredConnected = false;
+
             if ((!_connected && !_connecting) || _connecting)
             {
                 return;
@@ -243,7 +275,6 @@ internal sealed class SensorService : IAsyncDisposable
 
         _ = Task.Run(async () =>
         {
-            // Allow DisconnectNowAsync to own the transition state.
             lock (_stateGate)
             {
                 _connecting = false;
@@ -364,16 +395,91 @@ internal sealed class SensorService : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                lock (_stateGate)
-                {
-                    _lastError = ex.Message;
-                }
+                HandleConnectionLoss(ex);
+                break;
             }
         }
     }
 
+    private async Task ReconnectLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            bool shouldConnect;
+            lock (_stateGate)
+            {
+                shouldConnect = _desiredConnected && !_connected && !_connecting;
+            }
+
+            if (shouldConnect)
+            {
+                try
+                {
+                    await ConnectNowAsync(cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch
+                {
+                    // LastError is retained by ConnectNowAsync. Try again after the interval.
+                }
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, _config.ReconnectIntervalSeconds)), cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+    }
+
+    private void HandleConnectionLoss(Exception ex)
+    {
+        TemperHumReader? reader;
+        lock (_stateGate)
+        {
+            reader = _reader;
+            _reader = null;
+            _snapshot = null;
+            _connected = false;
+            _connecting = false;
+            _lastError = ex.Message;
+        }
+
+        reader?.Dispose();
+    }
+
     public async ValueTask DisposeAsync()
     {
+        CancellationTokenSource? reconnectCts;
+        Task? reconnectTask;
+        lock (_stateGate)
+        {
+            _desiredConnected = false;
+            reconnectCts = _reconnectCts;
+            reconnectTask = _reconnectTask;
+            _reconnectCts = null;
+            _reconnectTask = null;
+        }
+
+        reconnectCts?.Cancel();
+        if (reconnectTask is not null)
+        {
+            try
+            {
+                await reconnectTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+        reconnectCts?.Dispose();
+
         await DisconnectNowAsync();
         _ioGate.Dispose();
     }
