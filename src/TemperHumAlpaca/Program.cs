@@ -123,6 +123,9 @@ internal sealed class TemperHumApp
 
 internal sealed class TemperHumReader : IDisposable
 {
+    // Payload used by TEMPerX/TEMPerHUM firmware. On Linux hidraw this is written
+    // as 8 bytes. HIDSharp on Windows requires an additional report-ID byte at
+    // index 0, so ReadMeasurement prefixes this payload with report ID 0.
     private static readonly byte[] MeasurementCommand = [0x01, 0x80, 0x33, 0x01, 0x00, 0x00, 0x00, 0x00];
 
     private readonly HidStream _stream;
@@ -172,21 +175,26 @@ internal sealed class TemperHumReader : IDisposable
     public Measurement ReadMeasurement()
     {
 #pragma warning disable CS0612
-        var outputLength = Math.Max(_device.MaxOutputReportLength, MeasurementCommand.Length);
+        var outputLength = Math.Max(_device.MaxOutputReportLength, MeasurementCommand.Length + 1);
 #pragma warning restore CS0612
+
+        // HIDSharp's Write buffer includes the report-ID byte. This device uses
+        // unnumbered reports, so byte 0 must be 0 and the 8-byte command starts
+        // at byte 1. With this sensor MaxOutputReportLength is 9.
         var command = new byte[outputLength];
-        Array.Copy(MeasurementCommand, command, MeasurementCommand.Length);
+        command[0] = 0x00;
+        Array.Copy(MeasurementCommand, 0, command, 1, MeasurementCommand.Length);
         _stream.Write(command);
 
         var packets = new List<byte>();
-        var deadline = DateTime.UtcNow.AddMilliseconds(450);
+        var deadline = DateTime.UtcNow.AddMilliseconds(650);
 
         while (DateTime.UtcNow < deadline && packets.Count < 16)
         {
             try
             {
 #pragma warning disable CS0612
-                var buffer = new byte[Math.Max(_device.MaxInputReportLength, 8)];
+                var buffer = new byte[Math.Max(_device.MaxInputReportLength, 9)];
 #pragma warning restore CS0612
                 var read = _stream.Read(buffer, 0, buffer.Length);
                 if (read <= 0)
@@ -194,7 +202,7 @@ internal sealed class TemperHumReader : IDisposable
                     continue;
                 }
 
-                var payload = StripReportIdIfPresent(buffer.AsSpan(0, read));
+                var payload = StripReportId(buffer.AsSpan(0, read));
                 packets.AddRange(payload.ToArray());
 
                 if (packets.Count >= 6)
@@ -234,11 +242,11 @@ internal sealed class TemperHumReader : IDisposable
         return new Measurement(temperature, humidity);
     }
 
-    private static ReadOnlySpan<byte> StripReportIdIfPresent(ReadOnlySpan<byte> report)
+    private static ReadOnlySpan<byte> StripReportId(ReadOnlySpan<byte> report)
     {
-        // HIDSharp includes the report-ID byte in reports. These devices commonly
-        // use report ID 0 or 1. Strip a leading zero only; a leading 01 can be payload.
-        return report.Length > 8 && report[0] == 0x00 ? report[1..] : report;
+        // HidSharp includes the report-ID byte in each input report. MaxInputReportLength
+        // is 9 for this device: one report-ID byte followed by the 8-byte sensor payload.
+        return report.Length == 9 ? report[1..] : report;
     }
 
     public void Dispose() => _stream.Dispose();
