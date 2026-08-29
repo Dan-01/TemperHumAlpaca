@@ -1,21 +1,14 @@
-using System.Buffers.Binary;
 using System.Text.Json;
-using HidSharp;
 
 var app = new TemperHumApp();
 return await app.RunAsync(args);
-
-internal static class DeviceConstants
-{
-    public const int VendorId = 0x413D;
-    public const int ProductId = 0x2107;
-}
 
 internal sealed class TemperHumApp
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = true
     };
 
@@ -30,48 +23,30 @@ internal sealed class TemperHumApp
             return 0;
         }
 
-        Console.WriteLine("TemperHumAlpaca v0.1 USB reader");
+        if (options.Once)
+        {
+            return RunOnce(config);
+        }
+
+        if (options.Monitor)
+        {
+            return await RunMonitorAsync(config);
+        }
+
+        return await RunServerAsync(config);
+    }
+
+    private static int RunOnce(AppConfig config)
+    {
+        Console.WriteLine("TemperHumAlpaca v0.2 USB test");
         Console.WriteLine($"Target: VID {DeviceConstants.VendorId:X4} / PID {DeviceConstants.ProductId:X4}");
         Console.WriteLine("Close the vendor TEMPerHUM application before running this tool.\n");
-
-        using var cts = new CancellationTokenSource();
-        Console.CancelKeyPress += (_, eventArgs) =>
-        {
-            eventArgs.Cancel = true;
-            cts.Cancel();
-        };
 
         try
         {
             using var reader = TemperHumReader.Open();
             Console.WriteLine($"Opened HID interface: {reader.DevicePath}\n");
-
-            do
-            {
-                var raw = reader.ReadMeasurement();
-                var correctedTemperature = raw.TemperatureC + config.TemperatureOffsetC;
-                var correctedHumidity = Math.Clamp(raw.HumidityPercent + config.HumidityOffsetPercent, 0.0, 100.0);
-                var dewPoint = DewPoint.Calculate(correctedTemperature, correctedHumidity);
-
-                Console.WriteLine(
-                    $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  " +
-                    $"{correctedTemperature:F2} °C  " +
-                    $"{correctedHumidity:F2} %RH  " +
-                    $"dew {dewPoint:F2} °C");
-
-                if (options.Once)
-                {
-                    break;
-                }
-
-                await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, config.PollIntervalSeconds)), cts.Token);
-            }
-            while (!cts.IsCancellationRequested);
-
-            return 0;
-        }
-        catch (OperationCanceledException)
-        {
+            PrintMeasurement(reader.ReadMeasurement(), config);
             return 0;
         }
         catch (Exception ex)
@@ -82,27 +57,111 @@ internal sealed class TemperHumApp
         }
     }
 
-    private static AppConfig LoadConfig()
+    private static async Task<int> RunMonitorAsync(AppConfig config)
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "temperhum.json");
-        if (!File.Exists(path))
+        Console.WriteLine("TemperHumAlpaca v0.2 USB monitor");
+        Console.WriteLine("Press Ctrl+C to stop.\n");
+
+        using var cts = CreateConsoleCancellation();
+        try
         {
-            return new AppConfig();
+            using var reader = TemperHumReader.Open();
+            Console.WriteLine($"Opened HID interface: {reader.DevicePath}\n");
+
+            while (!cts.IsCancellationRequested)
+            {
+                PrintMeasurement(reader.ReadMeasurement(), config);
+                await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, config.PollIntervalSeconds)), cts.Token);
+            }
+
+            return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"ERROR: {ex.Message}");
+            return 1;
+        }
+    }
+
+    private static async Task<int> RunServerAsync(AppConfig config)
+    {
+        using var cts = CreateConsoleCancellation();
+        await using var sensor = new SensorService(config);
+
+        if (config.AutoConnect)
+        {
+            try
+            {
+                await sensor.ConnectNowAsync(cts.Token);
+            }
+            catch (Exception ex)
+            {
+                // The Alpaca server is still useful while disconnected because N.I.N.A.
+                // can discover it and initiate a later connection attempt.
+                Console.Error.WriteLine($"WARNING: Initial sensor connection failed: {ex.Message}");
+            }
         }
 
         try
         {
-            return JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path), JsonOptions) ?? new AppConfig();
+            await AlpacaServer.RunAsync(sensor, config, cts.Token);
+            return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            return 0;
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException($"Could not read {path}: {ex.Message}", ex);
+            Console.Error.WriteLine($"ERROR: Alpaca server failed: {ex.Message}");
+            return 1;
         }
+    }
+
+    private static AppConfig LoadConfig()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "temperhum.json");
+        AppConfig config;
+
+        if (!File.Exists(path))
+        {
+            config = new AppConfig();
+        }
+        else
+        {
+            try
+            {
+                config = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path), JsonOptions) ?? new AppConfig();
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Could not read {path}: {ex.Message}", ex);
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(config.UniqueId))
+        {
+            config.UniqueId = Guid.NewGuid().ToString("D");
+            try
+            {
+                File.WriteAllText(path, JsonSerializer.Serialize(config, JsonOptions));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"WARNING: Could not persist generated Alpaca UniqueID to {path}: {ex.Message}");
+            }
+        }
+
+        return config;
     }
 
     private static void ListDevices()
     {
-        var devices = DeviceList.Local.GetHidDevices(DeviceConstants.VendorId, DeviceConstants.ProductId).ToList();
+        var devices = TemperHumReader.GetMatchingDevices();
         if (devices.Count == 0)
         {
             Console.WriteLine($"No HID devices found for VID {DeviceConstants.VendorId:X4} / PID {DeviceConstants.ProductId:X4}.");
@@ -119,173 +178,52 @@ internal sealed class TemperHumApp
 #pragma warning restore CS0612
         }
     }
-}
 
-internal sealed class TemperHumReader : IDisposable
-{
-    // Payload used by TEMPerX/TEMPerHUM firmware. On Linux hidraw this is written
-    // as 8 bytes. HIDSharp on Windows requires an additional report-ID byte at
-    // index 0, so ReadMeasurement prefixes this payload with report ID 0.
-    private static readonly byte[] MeasurementCommand = [0x01, 0x80, 0x33, 0x01, 0x00, 0x00, 0x00, 0x00];
-
-    private readonly HidStream _stream;
-    private readonly HidDevice _device;
-
-    private TemperHumReader(HidDevice device, HidStream stream)
+    private static void PrintMeasurement(Measurement raw, AppConfig config)
     {
-        _device = device;
-        _stream = stream;
-        _stream.ReadTimeout = 1200;
-        _stream.WriteTimeout = 1200;
+        var temperature = raw.TemperatureC + config.TemperatureOffsetC;
+        var humidity = Math.Clamp(raw.HumidityPercent + config.HumidityOffsetPercent, 0.0, 100.0);
+        var dewPoint = DewPoint.Calculate(temperature, humidity);
+
+        Console.WriteLine(
+            $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  " +
+            $"{temperature:F2} °C  {humidity:F2} %RH  dew {dewPoint:F2} °C");
     }
 
-    public string DevicePath => _device.DevicePath;
-
-    public static TemperHumReader Open()
+    private static CancellationTokenSource CreateConsoleCancellation()
     {
-        var devices = DeviceList.Local.GetHidDevices(DeviceConstants.VendorId, DeviceConstants.ProductId).ToList();
-        if (devices.Count == 0)
+        var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, eventArgs) =>
         {
-            throw new InvalidOperationException(
-                $"No TEMPerHUM-compatible HID device found (VID {DeviceConstants.VendorId:X4}, PID {DeviceConstants.ProductId:X4}).");
-        }
-
-        // Windows exposes this composite device through multiple HID interfaces.
-        // The known TEMPerX/TEMPerHUM protocol lives on MI_01, so prefer it.
-        var ordered = devices
-            .OrderByDescending(d => d.DevicePath.Contains("mi_01", StringComparison.OrdinalIgnoreCase))
-#pragma warning disable CS0612
-            .ThenByDescending(d => d.MaxInputReportLength >= 8 && d.MaxOutputReportLength >= 8)
-#pragma warning restore CS0612
-            .ToList();
-
-        foreach (var device in ordered)
-        {
-            if (device.TryOpen(out var stream))
-            {
-                return new TemperHumReader(device, stream);
-            }
-        }
-
-        throw new InvalidOperationException(
-            "The matching HID interfaces were found, but none could be opened. " +
-            "Close the vendor TEMPerHUM application and try again.");
-    }
-
-    public Measurement ReadMeasurement()
-    {
-#pragma warning disable CS0612
-        var outputLength = Math.Max(_device.MaxOutputReportLength, MeasurementCommand.Length + 1);
-#pragma warning restore CS0612
-
-        // HIDSharp's Write buffer includes the report-ID byte. This device uses
-        // unnumbered reports, so byte 0 must be 0 and the 8-byte command starts
-        // at byte 1. With this sensor MaxOutputReportLength is 9.
-        var command = new byte[outputLength];
-        command[0] = 0x00;
-        Array.Copy(MeasurementCommand, 0, command, 1, MeasurementCommand.Length);
-        _stream.Write(command);
-
-        var packets = new List<byte>();
-        var deadline = DateTime.UtcNow.AddMilliseconds(650);
-
-        while (DateTime.UtcNow < deadline && packets.Count < 16)
-        {
-            try
-            {
-#pragma warning disable CS0612
-                var buffer = new byte[Math.Max(_device.MaxInputReportLength, 9)];
-#pragma warning restore CS0612
-                var read = _stream.Read(buffer, 0, buffer.Length);
-                if (read <= 0)
-                {
-                    continue;
-                }
-
-                var payload = StripReportId(buffer.AsSpan(0, read));
-                packets.AddRange(payload.ToArray());
-
-                if (packets.Count >= 6)
-                {
-                    break;
-                }
-            }
-            catch (TimeoutException)
-            {
-                break;
-            }
-        }
-
-        if (packets.Count < 6)
-        {
-            throw new InvalidOperationException(
-                $"Sensor returned only {packets.Count} payload byte(s); expected at least 6. " +
-                "Use --list and report the interface lengths if this persists.");
-        }
-
-        var data = packets.ToArray();
-        var temperature = BinaryPrimitives.ReadInt16BigEndian(data.AsSpan(2, 2)) / 100.0;
-        var humidity = BinaryPrimitives.ReadInt16BigEndian(data.AsSpan(4, 2)) / 100.0;
-
-        if (temperature is < -80 or > 100)
-        {
-            throw new InvalidOperationException(
-                $"Implausible temperature decoded: {temperature:F2} °C. Raw: {Convert.ToHexString(data)}");
-        }
-
-        if (humidity is < 0 or > 100)
-        {
-            throw new InvalidOperationException(
-                $"Implausible humidity decoded: {humidity:F2} %RH. Raw: {Convert.ToHexString(data)}");
-        }
-
-        return new Measurement(temperature, humidity);
-    }
-
-    private static ReadOnlySpan<byte> StripReportId(ReadOnlySpan<byte> report)
-    {
-        // HidSharp includes the report-ID byte in each input report. MaxInputReportLength
-        // is 9 for this device: one report-ID byte followed by the 8-byte sensor payload.
-        return report.Length == 9 ? report[1..] : report;
-    }
-
-    public void Dispose() => _stream.Dispose();
-}
-
-internal static class DewPoint
-{
-    public static double Calculate(double temperatureC, double humidityPercent)
-    {
-        if (humidityPercent <= 0)
-        {
-            return double.NegativeInfinity;
-        }
-
-        // Magnus approximation, suitable for normal terrestrial observing conditions.
-        const double a = 17.62;
-        const double b = 243.12;
-        var gamma = Math.Log(humidityPercent / 100.0) + (a * temperatureC) / (b + temperatureC);
-        return (b * gamma) / (a - gamma);
+            eventArgs.Cancel = true;
+            cts.Cancel();
+        };
+        return cts;
     }
 }
-
-internal sealed record Measurement(double TemperatureC, double HumidityPercent);
 
 internal sealed class AppConfig
 {
     public double TemperatureOffsetC { get; set; }
     public double HumidityOffsetPercent { get; set; }
     public int PollIntervalSeconds { get; set; } = 1;
+    public int AlpacaPort { get; set; } = 11111;
+    public bool DiscoveryEnabled { get; set; } = true;
+    public int DiscoveryPort { get; set; } = 32227;
+    public bool AutoConnect { get; set; } = true;
+    public string UniqueId { get; set; } = string.Empty;
 }
 
 internal sealed class Arguments
 {
     public bool Once { get; init; }
     public bool List { get; init; }
+    public bool Monitor { get; init; }
 
     public static Arguments Parse(string[] args) => new()
     {
         Once = args.Any(a => a.Equals("--once", StringComparison.OrdinalIgnoreCase)),
-        List = args.Any(a => a.Equals("--list", StringComparison.OrdinalIgnoreCase))
+        List = args.Any(a => a.Equals("--list", StringComparison.OrdinalIgnoreCase)),
+        Monitor = args.Any(a => a.Equals("--monitor", StringComparison.OrdinalIgnoreCase))
     };
 }
