@@ -2,6 +2,7 @@
   "temperatureOffsetC": 0.0,
   "humidityOffsetPercent": 0.0,
   "pollIntervalSeconds": 1,
+  "reconnectIntervalSeconds": 5,
   "alpacaPort": 11111,
   "discoveryEnabled": true,
   "discoveryPort": 32227,
