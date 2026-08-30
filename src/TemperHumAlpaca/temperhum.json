@@ -8,5 +8,6 @@
   "discoveryEnabled": true,
   "discoveryPort": 32227,
   "autoConnect": true,
+  "deviceProfile": "auto",
   "uniqueId": ""
 }
