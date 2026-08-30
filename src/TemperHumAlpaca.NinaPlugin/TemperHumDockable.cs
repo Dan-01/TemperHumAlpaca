@@ -286,6 +286,40 @@ public sealed class TemperHumDockable : DockableVM, IDisposable
 
         lastAlert = now;
         Notification.ShowWarning(message);
+        _ = SendTelegramAlertSafeAsync(message);
+    }
+
+    private async Task SendTelegramAlertSafeAsync(string message)
+    {
+        if (!GetBool(nameof(TemperHumPlugin.TelegramEnabled), false))
+        {
+            return;
+        }
+
+        var chatId = GetString(nameof(TemperHumPlugin.TelegramChatId), string.Empty).Trim();
+        var token = TemperHumPlugin.ReadTelegramBotToken(_settings);
+        if (string.IsNullOrWhiteSpace(chatId) || string.IsNullOrWhiteSpace(token))
+        {
+            return;
+        }
+
+        try
+        {
+            await TelegramNotifier.SendAsync(
+                token,
+                chatId,
+                $"🔭 TemperHumAlpaca\n⚠️ {message}",
+                _pollCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_pollCts.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            await OnUiAsync(() =>
+                Notification.ShowWarning($"TemperHumAlpaca Telegram delivery failed: {ex.Message}"))
+                .ConfigureAwait(false);
+        }
     }
 
     private void OpenDashboard()
