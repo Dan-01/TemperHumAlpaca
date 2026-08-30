@@ -22,16 +22,18 @@ internal static class DashboardServer
 
         var app = builder.Build();
         var advisor = new DewAdvisor();
+        using var forecast = new ForecastService();
         var trackingTask = advisor.TrackAsync(sensor, cancellationToken);
+        var forecastTask = forecast.TrackAsync(sensor, config, cancellationToken);
 
         app.MapGet("/", () => Results.Redirect("/dashboard"));
         app.MapGet("/dashboard", (HttpRequest request) =>
-            Results.Content(BuildPage(sensor, config, advisor, request.Query["message"].ToString()), "text/html; charset=utf-8"));
+            Results.Content(BuildPage(sensor, config, advisor, forecast, request.Query["message"].ToString()), "text/html; charset=utf-8"));
 
         // Local machine-readable endpoints intended for lightweight integrations such
         // as a future N.I.N.A. plugin. They deliberately live on the loopback-only
         // dashboard listener rather than extending the standard Alpaca contract.
-        app.MapGet("/api/v1/status", () => BuildStatus(sensor, advisor));
+        app.MapGet("/api/v1/status", () => BuildStatus(sensor, advisor, forecast));
         app.MapGet("/api/v1/history", () => Results.Json(new
         {
             version = AppInfo.Version,
@@ -42,6 +44,7 @@ internal static class DashboardServer
                 dewMarginC = point.DewMarginC
             })
         }));
+        app.MapGet("/api/v1/forecast", () => Results.Json(forecast.Outlook));
 
         app.MapPost("/calibrate", async (HttpRequest request) =>
         {
@@ -79,6 +82,10 @@ internal static class DashboardServer
                 SaveConfig(config);
 
                 await sensor.RefreshAsync(cancellationToken);
+                if (config.ForecastEnabled)
+                {
+                    await forecast.RefreshNowAsync(sensor, config, cancellationToken);
+                }
 
                 return Redirect(
                     $"Calibration saved: temperature {newTemperatureOffset:+0.00;-0.00;0.00} °C, humidity {newHumidityOffset:+0.00;-0.00;0.00} %RH.");
@@ -107,12 +114,100 @@ internal static class DashboardServer
                     await sensor.RefreshAsync(cancellationToken);
                 }
 
+                if (config.ForecastEnabled)
+                {
+                    await forecast.RefreshNowAsync(sensor, config, cancellationToken);
+                }
+
                 return Redirect("Calibration offsets saved.");
             }
             catch (Exception ex)
             {
                 return Redirect($"Could not save offsets: {ex.Message}");
             }
+        });
+
+        app.MapPost("/forecast-settings", async (HttpRequest request) =>
+        {
+            try
+            {
+                var form = await request.ReadFormAsync(cancellationToken);
+                var enabled = form.ContainsKey("forecastEnabled");
+                var useEnsemble = form.ContainsKey("forecastUseEnsemble");
+                var latitude = ParseNullableDouble(form["forecastLatitude"]);
+                var longitude = ParseNullableDouble(form["forecastLongitude"]);
+                var hours = ParseInt(form["forecastHours"], "Forecast horizon");
+                var refreshMinutes = ParseInt(form["forecastRefreshMinutes"], "Forecast refresh interval");
+                var safetyMargin = ParseDouble(form["forecastSafetyMarginC"], "Forecast safety margin");
+
+                if (latitude is < -90 or > 90)
+                {
+                    throw new InvalidOperationException("Latitude must be between -90 and +90 degrees.");
+                }
+
+                if (longitude is < -180 or > 180)
+                {
+                    throw new InvalidOperationException("Longitude must be between -180 and +180 degrees.");
+                }
+
+                if (enabled && (latitude is null || longitude is null))
+                {
+                    throw new InvalidOperationException("Latitude and longitude are required when overnight forecasting is enabled.");
+                }
+
+                if (hours is < 6 or > 24)
+                {
+                    throw new InvalidOperationException("Forecast horizon must be between 6 and 24 hours.");
+                }
+
+                if (refreshMinutes is < 5 or > 180)
+                {
+                    throw new InvalidOperationException("Forecast refresh interval must be between 5 and 180 minutes.");
+                }
+
+                if (safetyMargin is < 0 or > 5)
+                {
+                    throw new InvalidOperationException("Forecast safety margin must be between 0 and 5 °C.");
+                }
+
+                config.ForecastEnabled = enabled;
+                config.ForecastLatitude = latitude;
+                config.ForecastLongitude = longitude;
+                config.ForecastHours = hours;
+                config.ForecastRefreshMinutes = refreshMinutes;
+                config.ForecastSafetyMarginC = safetyMargin;
+                config.ForecastUseEnsemble = useEnsemble;
+                SaveConfig(config);
+
+                forecast.ResetSessionRecommendation();
+                await forecast.RefreshNowAsync(sensor, config, cancellationToken);
+                return Redirect(enabled
+                    ? "Overnight forecast settings saved and forecast refreshed."
+                    : "Overnight forecasting disabled.");
+            }
+            catch (Exception ex)
+            {
+                return Redirect($"Could not save forecast settings: {ex.Message}");
+            }
+        });
+
+        app.MapPost("/forecast-refresh", async () =>
+        {
+            try
+            {
+                await forecast.RefreshNowAsync(sensor, config, cancellationToken);
+                return Redirect("Overnight forecast refreshed.");
+            }
+            catch (Exception ex)
+            {
+                return Redirect($"Forecast refresh failed: {ex.Message}");
+            }
+        });
+
+        app.MapPost("/forecast-reset", () =>
+        {
+            forecast.ResetSessionRecommendation();
+            return Redirect("Set-and-leave high-water mark reset to the current forecast recommendation.");
         });
 
         app.MapPost("/refresh", async () =>
@@ -155,7 +250,7 @@ internal static class DashboardServer
         {
             try
             {
-                await trackingTask;
+                await Task.WhenAll(trackingTask, forecastTask);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -163,8 +258,9 @@ internal static class DashboardServer
         }
     }
 
-    private static IResult BuildStatus(SensorService sensor, DewAdvisor advisor)
+    private static IResult BuildStatus(SensorService sensor, DewAdvisor advisor, ForecastService forecast)
     {
+        var outlook = forecast.Outlook;
         if (!sensor.Connected)
         {
             return Results.Json(new
@@ -173,6 +269,7 @@ internal static class DashboardServer
                 connected = false,
                 connecting = sensor.Connecting,
                 historySampleCount = advisor.GetHistory().Count,
+                forecast = outlook,
                 lastError = sensor.LastError
             });
         }
@@ -196,6 +293,7 @@ internal static class DashboardServer
                 dewMarginTrend = advice.Trend,
                 dewMarginTrendCPerHour = advice.DewMarginTrendCPerHour,
                 historySampleCount = advisor.GetHistory().Count,
+                forecast = outlook,
                 advisory = advice.Note
             });
         }
@@ -206,6 +304,7 @@ internal static class DashboardServer
                 version = AppInfo.Version,
                 connected = sensor.Connected,
                 historySampleCount = advisor.GetHistory().Count,
+                forecast = outlook,
                 error = ex.Message
             });
         }
@@ -219,6 +318,31 @@ internal static class DashboardServer
         if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
         {
             throw new InvalidOperationException($"{fieldName} must be a number using a decimal point.");
+        }
+
+        return value;
+    }
+
+    private static double? ParseNullableDouble(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+        {
+            throw new InvalidOperationException("Latitude and longitude must use decimal degrees with a decimal point.");
+        }
+
+        return value;
+    }
+
+    private static int ParseInt(string raw, string fieldName)
+    {
+        if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+        {
+            throw new InvalidOperationException($"{fieldName} must be a whole number.");
         }
 
         return value;
@@ -313,7 +437,7 @@ internal static class DashboardServer
         return $"{history.Count} samples · {spanText} shown · current {history[^1].DewMarginC:F2} °C · in-memory only";
     }
 
-    private static string BuildPage(SensorService sensor, AppConfig config, DewAdvisor advisor, string message)
+    private static string BuildPage(SensorService sensor, AppConfig config, DewAdvisor advisor, ForecastService forecast, string message)
     {
         string status;
         string temperature = "—";
@@ -372,6 +496,39 @@ internal static class DashboardServer
         var history = advisor.GetHistory();
         var historyChart = BuildHistoryChart(history);
         var historySummary = BuildHistorySummary(history);
+        var outlook = forecast.Outlook;
+
+        string forecastState;
+        string overnightPower = "—";
+        string overnightKnob = "—";
+        string predictedMinimum = "—";
+        string worstTime = "—";
+        string localBias = "—";
+        string forecastConfidence = outlook.Confidence;
+        string forecastUpdated = outlook.UpdatedAt is DateTimeOffset forecastAt ? forecastAt.ToLocalTime().ToString("HH:mm") : "—";
+        string forecastError = string.IsNullOrWhiteSpace(outlook.Error) ? string.Empty : WebUtility.HtmlEncode(outlook.Error);
+
+        if (!config.ForecastEnabled)
+        {
+            forecastState = "Disabled";
+        }
+        else if (!outlook.Configured)
+        {
+            forecastState = "Needs location";
+        }
+        else if (outlook.Available)
+        {
+            forecastState = "Available";
+            overnightPower = outlook.SessionPowerPercent is int sessionPower ? $"~{sessionPower}%" : "—";
+            overnightKnob = outlook.SessionKnobPosition ?? "—";
+            predictedMinimum = outlook.ConservativeMinimumMarginC is double minimum ? $"{minimum:F2} °C" : "—";
+            worstTime = outlook.WorstAt is DateTimeOffset at ? at.ToLocalTime().ToString("HH:mm") : "—";
+            localBias = outlook.LocalBiasC is double bias ? $"{bias:+0.00;-0.00;0.00} °C" : "—";
+        }
+        else
+        {
+            forecastState = "Waiting";
+        }
 
         var lastError = string.IsNullOrWhiteSpace(sensor.LastError)
             ? "None"
@@ -380,6 +537,11 @@ internal static class DashboardServer
         var notice = string.IsNullOrWhiteSpace(message)
             ? string.Empty
             : $"<div class=\"notice\">{WebUtility.HtmlEncode(message)}</div>";
+
+        var forecastLatitude = config.ForecastLatitude?.ToString("0.######", CultureInfo.InvariantCulture) ?? string.Empty;
+        var forecastLongitude = config.ForecastLongitude?.ToString("0.######", CultureInfo.InvariantCulture) ?? string.Empty;
+        var forecastEnabledChecked = config.ForecastEnabled ? "checked" : string.Empty;
+        var forecastEnsembleChecked = config.ForecastUseEnsemble ? "checked" : string.Empty;
 
         return $$"""
         <!doctype html>
@@ -395,9 +557,9 @@ internal static class DashboardServer
             h1{margin-bottom:4px}h2{margin-top:0}.sub{opacity:.7;margin-top:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:22px 0}
             .card,.panel{border:1px solid var(--border);border-radius:12px;background:var(--panel);padding:16px}.label{font-size:.86rem;opacity:.7}.value{font-size:1.8rem;font-weight:650;margin-top:4px}.detail{font-size:.85rem;opacity:.75;margin-top:4px}
             .panel{margin:14px 0}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}label{display:block;font-size:.88rem;margin-bottom:4px}
-            input{box-sizing:border-box;width:100%;padding:9px;border:1px solid var(--border);border-radius:7px}button{padding:9px 14px;border-radius:7px;border:1px solid var(--border);cursor:pointer;margin-top:10px}
+            input{box-sizing:border-box;width:100%;padding:9px;border:1px solid var(--border);border-radius:7px}input[type=checkbox]{width:auto;margin-right:7px}button{padding:9px 14px;border-radius:7px;border:1px solid var(--border);cursor:pointer;margin-top:10px}
             code{background:#8882;padding:2px 5px;border-radius:4px}.notice{border-left:4px solid var(--good);padding:10px 12px;background:#2e9b5518;margin:16px 0;border-radius:6px}
-            .small{font-size:.88rem;opacity:.75}.status{font-weight:650}.advisory{border-left:4px solid var(--warn)}
+            .small{font-size:.88rem;opacity:.75}.status{font-weight:650}.advisory{border-left:4px solid var(--warn)}.forecast{border-left:4px solid var(--good)}
             .history-chart{width:100%;height:auto;min-height:180px;display:block;margin-top:8px}.history-grid{stroke:currentColor;stroke-opacity:.15;stroke-width:1}.history-line{fill:none;stroke:currentColor;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}.history-dot{fill:currentColor}.history-label{fill:currentColor;opacity:.62;font-size:12px}.history-empty{padding:28px 8px;text-align:center;opacity:.7}
           </style>
         </head>
@@ -415,7 +577,21 @@ internal static class DashboardServer
 
           <div class="grid">
             <div class="card"><div class="label">Dew risk</div><div class="value">{{dewRisk}}</div></div>
-            <div class="card"><div class="label">AstroZap estimate</div><div class="value">{{heaterPower}}</div><div class="detail">Knob: {{knobPosition}}</div></div>
+            <div class="card"><div class="label">AstroZap estimate now</div><div class="value">{{heaterPower}}</div><div class="detail">Knob: {{knobPosition}}</div></div>
+          </div>
+
+          <div class="panel forecast">
+            <h2>Overnight set-and-leave outlook</h2>
+            <div class="grid">
+              <div class="card"><div class="label">Overnight heater</div><div class="value">{{overnightPower}}</div><div class="detail">Knob: {{overnightKnob}}</div></div>
+              <div class="card"><div class="label">Conservative minimum margin</div><div class="value">{{predictedMinimum}}</div><div class="detail">Worst around {{worstTime}}</div></div>
+              <div class="card"><div class="label">Local forecast correction</div><div class="value">{{localBias}}</div><div class="detail">sensor minus forecast now</div></div>
+            </div>
+            <div class="small"><strong>Status:</strong> {{forecastState}} · <strong>confidence:</strong> {{forecastConfidence}} · <strong>updated:</strong> {{forecastUpdated}}</div>
+            {{(string.IsNullOrWhiteSpace(forecastError) ? string.Empty : $"<div class=\"small\">Last forecast error: {forecastError}</div>")}}
+            <p class="small">The overnight value is a high-water mark: it can rise if the forecast worsens, but it will not automatically fall during the session. The conservative margin uses the local sensor bias, the worst UKMO 2 km ensemble member when available, and the configured safety margin.</p>
+            <form method="post" action="/forecast-refresh" style="display:inline"><button type="submit">Refresh forecast</button></form>
+            <form method="post" action="/forecast-reset" style="display:inline"><button type="submit">Reset session high-water mark</button></form>
           </div>
 
           <div class="panel">
@@ -426,7 +602,7 @@ internal static class DashboardServer
 
           <div class="panel advisory">
             <strong>Heater guidance is advisory.</strong>
-            <div class="small">The estimate maps dew margin to the AstroZap dual-channel controller's approximate 5–95% duty-cycle range and adjusts modestly when the margin is trending down. Because TemperHumAlpaca measures ambient air rather than the objective itself, use this as a starting knob position, not a guarantee against dew.</div>
+            <div class="small">The estimates map dew margin to the AstroZap dual-channel controller's approximate 5–95% duty-cycle range. TemperHumAlpaca measures ambient air rather than the objective itself, so the forecast is a conservative starting setting rather than a guarantee against dew.</div>
           </div>
 
           <div class="panel">
@@ -434,6 +610,24 @@ internal static class DashboardServer
             <span class="small">Reading age: {{age}} · Raw sensor: {{rawTemperature}}, {{rawHumidity}} RH · Last error: {{lastError}}</span>
             <form method="post" action="/refresh" style="display:inline"><button type="submit">Refresh reading</button></form>
             <form method="post" action="/reconnect" style="display:inline"><button type="submit">Reconnect USB sensor</button></form>
+          </div>
+
+          <div class="panel">
+            <h2>Overnight forecast settings</h2>
+            <p class="small">Coordinates are stored only in the local <code>temperhum.json</code>. When forecasting is enabled they are sent to Open-Meteo to retrieve UK Met Office forecast data.</p>
+            <form method="post" action="/forecast-settings">
+              <label><input name="forecastEnabled" type="checkbox" {{forecastEnabledChecked}}>Enable overnight forecast</label>
+              <label><input name="forecastUseEnsemble" type="checkbox" {{forecastEnsembleChecked}}>Use UKMO 2 km ensemble worst-member when available</label>
+              <div class="row">
+                <div><label for="forecastLatitude">Latitude</label><input id="forecastLatitude" name="forecastLatitude" type="number" step="0.000001" min="-90" max="90" value="{{forecastLatitude}}"></div>
+                <div><label for="forecastLongitude">Longitude</label><input id="forecastLongitude" name="forecastLongitude" type="number" step="0.000001" min="-180" max="180" value="{{forecastLongitude}}"></div>
+                <div><label for="forecastHours">Horizon (hours)</label><input id="forecastHours" name="forecastHours" type="number" min="6" max="24" step="1" value="{{config.ForecastHours}}" required></div>
+                <div><label for="forecastRefreshMinutes">Refresh (minutes)</label><input id="forecastRefreshMinutes" name="forecastRefreshMinutes" type="number" min="5" max="180" step="1" value="{{config.ForecastRefreshMinutes}}" required></div>
+                <div><label for="forecastSafetyMarginC">Extra safety margin (°C)</label><input id="forecastSafetyMarginC" name="forecastSafetyMarginC" type="number" min="0" max="5" step="0.1" value="{{config.ForecastSafetyMarginC.ToString("0.0", CultureInfo.InvariantCulture)}}" required></div>
+              </div>
+              <button type="submit">Save and refresh forecast</button>
+            </form>
+            <p class="small">Forecast data: Open-Meteo using UK Met Office UKV/ensemble models. UKV provides hourly 2 km data across the UK and Ireland.</p>
           </div>
 
           <div class="panel">
@@ -461,7 +655,7 @@ internal static class DashboardServer
 
           <div class="panel small">
             <strong>Alpaca:</strong> HTTP {{config.AlpacaPort}}, discovery UDP {{config.DiscoveryPort}}, ObservingConditions 0<br>
-            <strong>Dashboard:</strong> localhost:{{config.DashboardPort}} · <strong>status API:</strong> <code>/api/v1/status</code> · <strong>history API:</strong> <code>/api/v1/history</code><br>
+            <strong>Dashboard:</strong> localhost:{{config.DashboardPort}} · <strong>status API:</strong> <code>/api/v1/status</code> · <strong>history API:</strong> <code>/api/v1/history</code> · <strong>forecast API:</strong> <code>/api/v1/forecast</code><br>
             <strong>Unique ID:</strong> <code>{{WebUtility.HtmlEncode(config.UniqueId)}}</code><br>
             Configuration: <code>{{WebUtility.HtmlEncode(Path.Combine(AppContext.BaseDirectory, "temperhum.json"))}}</code>
           </div>
