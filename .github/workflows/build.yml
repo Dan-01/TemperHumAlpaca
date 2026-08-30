@@ -39,15 +39,21 @@ jobs:
         shell: pwsh
         run: Copy-Item src/TemperHumAlpaca/temperhum.json publish/win-x64/temperhum.json -Force
 
-      - name: Smoke test Alpaca server and dashboard
+      - name: Smoke test Alpaca server, dashboard and HID diagnostics
         shell: pwsh
         run: |
           $configPath = Join-Path $PWD 'publish/win-x64/temperhum.json'
           $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          if ($config.deviceProfile -ne 'auto') { throw 'Sample configuration must default deviceProfile to auto.' }
           $config.autoConnect = $false
           $config | ConvertTo-Json | Set-Content $configPath
 
           $exe = Join-Path $PWD 'publish/win-x64/TemperHumAlpaca.exe'
+          $probe = (& $exe --probe --vid 413D --pid 2107 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw '--probe returned a non-zero exit code.' }
+          if ($probe -notmatch 'HID probe') { throw '--probe output is missing its diagnostic heading.' }
+          if ($probe -notmatch 'no TEMPerHUM measurement command is sent') { throw '--probe did not report its read-only safety behaviour.' }
+
           $process = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
 
           try {
