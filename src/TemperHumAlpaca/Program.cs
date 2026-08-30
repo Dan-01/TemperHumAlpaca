@@ -305,6 +305,13 @@ internal sealed class AppConfig
     public int DiscoveryPort { get; set; } = 32227;
     public bool AutoConnect { get; set; } = true;
     public string DeviceProfile { get; set; } = DeviceProfiles.Auto;
+    public bool ForecastEnabled { get; set; }
+    public double? ForecastLatitude { get; set; }
+    public double? ForecastLongitude { get; set; }
+    public int ForecastHours { get; set; } = 12;
+    public int ForecastRefreshMinutes { get; set; } = 30;
+    public double ForecastSafetyMarginC { get; set; } = 0.5;
+    public bool ForecastUseEnsemble { get; set; } = true;
     public string UniqueId { get; set; } = string.Empty;
 }
 
