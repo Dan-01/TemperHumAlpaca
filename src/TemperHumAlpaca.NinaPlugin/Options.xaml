@@ -1,0 +1,50 @@
+<ResourceDictionary
+    x:Class="TemperHumAlpaca.NinaPlugin.Options"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <DataTemplate x:Key="TemperHumAlpaca_Options">
+        <StackPanel Margin="12" MaxWidth="760">
+            <TextBlock FontSize="18" FontWeight="SemiBold" Text="TemperHumAlpaca" />
+            <TextBlock Margin="0,4,0,14" TextWrapping="Wrap"
+                       Text="The N.I.N.A. panel reads TemperHumAlpaca's loopback API. The Windows service remains the source of truth for the USB sensor, dew calculations and overnight forecast." />
+
+            <TextBlock FontWeight="SemiBold" Text="Local service URL" />
+            <TextBox Margin="0,4,0,12" Text="{Binding ServiceUrl, UpdateSourceTrigger=PropertyChanged}" />
+
+            <Grid Margin="0,0,0,12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="120" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center" Text="Panel refresh interval (seconds)" />
+                <TextBox Grid.Column="1" Text="{Binding PollIntervalSeconds, UpdateSourceTrigger=LostFocus}" />
+            </Grid>
+
+            <Separator Margin="0,4,0,12" />
+            <CheckBox Margin="0,0,0,10" Content="Enable N.I.N.A. dew alerts" IsChecked="{Binding AlertsEnabled}" />
+
+            <Grid Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="180" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center" Text="Alert when dew risk reaches" />
+                <ComboBox Grid.Column="1" ItemsSource="{Binding AlertRiskLevels}" SelectedItem="{Binding AlertRiskLevel}" />
+            </Grid>
+
+            <CheckBox Margin="0,0,0,8" Content="Alert if the overnight heater recommendation increases" IsChecked="{Binding AlertOnHeaterIncrease}" />
+            <CheckBox Margin="0,0,0,8" Content="Alert if the TEMPerHUM sensor disconnects" IsChecked="{Binding AlertOnSensorDisconnect}" />
+            <CheckBox Margin="0,0,0,12" Content="Alert if the TemperHumAlpaca service becomes unavailable" IsChecked="{Binding AlertOnServiceLoss}" />
+
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="120" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center" Text="Repeat-alert cooldown (minutes)" />
+                <TextBox Grid.Column="1" Text="{Binding AlertCooldownMinutes, UpdateSourceTrigger=LostFocus}" />
+            </Grid>
+        </StackPanel>
+    </DataTemplate>
+</ResourceDictionary>

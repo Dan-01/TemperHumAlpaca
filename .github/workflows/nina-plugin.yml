@@ -1,0 +1,62 @@
+name: nina-plugin
+
+on:
+  push:
+    branches: [develop, master]
+    paths:
+      - 'src/TemperHumAlpaca.NinaPlugin/**'
+      - '.github/workflows/nina-plugin.yml'
+  pull_request:
+    branches: [develop, master]
+    paths:
+      - 'src/TemperHumAlpaca.NinaPlugin/**'
+      - '.github/workflows/nina-plugin.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-nina-plugin:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore N.I.N.A. plugin
+        run: dotnet restore src/TemperHumAlpaca.NinaPlugin/TemperHumAlpaca.NinaPlugin.csproj
+
+      - name: Build N.I.N.A. plugin
+        run: dotnet build src/TemperHumAlpaca.NinaPlugin/TemperHumAlpaca.NinaPlugin.csproj -c Release --no-restore
+
+      - name: Validate and stage plugin
+        shell: pwsh
+        run: |
+          $output = Join-Path $PWD 'src/TemperHumAlpaca.NinaPlugin/bin/Release/net8.0-windows7.0'
+          $dll = Join-Path $output 'TemperHumAlpaca.NinaPlugin.dll'
+          if (!(Test-Path $dll)) { throw 'TemperHumAlpaca N.I.N.A. plugin DLL was not produced.' }
+
+          $assembly = [System.Reflection.AssemblyName]::GetAssemblyName($dll)
+          if ($assembly.Version.ToString() -ne '0.6.0.0') {
+            throw "Unexpected N.I.N.A. plugin assembly version: $($assembly.Version)"
+          }
+
+          $stage = Join-Path $PWD 'publish/nina-plugin/TemperHumAlpaca'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item $dll $stage -Force
+
+          $pdb = [System.IO.Path]::ChangeExtension($dll, '.pdb')
+          if (Test-Path $pdb) { Copy-Item $pdb $stage -Force }
+
+      - name: Upload N.I.N.A. plugin artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: TemperHumAlpaca-NINA-plugin
+          path: publish/nina-plugin/
+          if-no-files-found: error
