@@ -689,26 +689,26 @@ internal static class DashboardServer
               <div class="coordinate-section">
                 <h3>DD (decimal degrees)*</h3>
                 <div class="row">
-                  <div><label for="forecastLatitudeDecimal">Latitude</label><input id="forecastLatitudeDecimal" name="forecastLatitudeDecimal" type="number" step="0.000001" min="-90" max="90" value="{{forecastLatitudeDecimal}}"></div>
                   <div><label for="forecastLongitudeDecimal">Longitude</label><input id="forecastLongitudeDecimal" name="forecastLongitudeDecimal" type="number" step="0.000001" min="-180" max="180" value="{{forecastLongitudeDecimal}}"></div>
+                  <div><label for="forecastLatitudeDecimal">Latitude</label><input id="forecastLatitudeDecimal" name="forecastLatitudeDecimal" type="number" step="0.000001" min="-90" max="90" value="{{forecastLatitudeDecimal}}"></div>
                 </div>
               </div>
 
               <div class="coordinate-section">
                 <h3>DMS (degrees, minutes, seconds)*</h3>
                 <div class="coordinate-line">
-                  <div class="coordinate-name">Latitude</div>
-                  <div><label for="forecastLatitudeHemisphere">N / S</label><select id="forecastLatitudeHemisphere" name="forecastLatitudeHemisphere"><option value=""></option><option value="N">N</option><option value="S">S</option></select></div>
-                  <div><label for="forecastLatitudeDegrees">Degrees</label><div class="coordinate-part"><input id="forecastLatitudeDegrees" name="forecastLatitudeDegrees" type="number" min="0" max="90" step="1"><span class="coordinate-symbol">°</span></div></div>
-                  <div><label for="forecastLatitudeMinutes">Minutes</label><div class="coordinate-part"><input id="forecastLatitudeMinutes" name="forecastLatitudeMinutes" type="number" min="0" max="59" step="1"><span class="coordinate-symbol">′</span></div></div>
-                  <div><label for="forecastLatitudeSeconds">Seconds</label><div class="coordinate-part"><input id="forecastLatitudeSeconds" name="forecastLatitudeSeconds" type="number" min="0" max="59.999" step="0.001"><span class="coordinate-symbol">″</span></div></div>
-                </div>
-                <div class="coordinate-line">
                   <div class="coordinate-name">Longitude</div>
                   <div><label for="forecastLongitudeHemisphere">E / W</label><select id="forecastLongitudeHemisphere" name="forecastLongitudeHemisphere"><option value=""></option><option value="E">E</option><option value="W">W</option></select></div>
                   <div><label for="forecastLongitudeDegrees">Degrees</label><div class="coordinate-part"><input id="forecastLongitudeDegrees" name="forecastLongitudeDegrees" type="number" min="0" max="180" step="1"><span class="coordinate-symbol">°</span></div></div>
                   <div><label for="forecastLongitudeMinutes">Minutes</label><div class="coordinate-part"><input id="forecastLongitudeMinutes" name="forecastLongitudeMinutes" type="number" min="0" max="59" step="1"><span class="coordinate-symbol">′</span></div></div>
                   <div><label for="forecastLongitudeSeconds">Seconds</label><div class="coordinate-part"><input id="forecastLongitudeSeconds" name="forecastLongitudeSeconds" type="number" min="0" max="59.999" step="0.001"><span class="coordinate-symbol">″</span></div></div>
+                </div>
+                <div class="coordinate-line">
+                  <div class="coordinate-name">Latitude</div>
+                  <div><label for="forecastLatitudeHemisphere">N / S</label><select id="forecastLatitudeHemisphere" name="forecastLatitudeHemisphere"><option value=""></option><option value="N">N</option><option value="S">S</option></select></div>
+                  <div><label for="forecastLatitudeDegrees">Degrees</label><div class="coordinate-part"><input id="forecastLatitudeDegrees" name="forecastLatitudeDegrees" type="number" min="0" max="90" step="1"><span class="coordinate-symbol">°</span></div></div>
+                  <div><label for="forecastLatitudeMinutes">Minutes</label><div class="coordinate-part"><input id="forecastLatitudeMinutes" name="forecastLatitudeMinutes" type="number" min="0" max="59" step="1"><span class="coordinate-symbol">′</span></div></div>
+                  <div><label for="forecastLatitudeSeconds">Seconds</label><div class="coordinate-part"><input id="forecastLatitudeSeconds" name="forecastLatitudeSeconds" type="number" min="0" max="59.999" step="0.001"><span class="coordinate-symbol">″</span></div></div>
                 </div>
               </div>
 
