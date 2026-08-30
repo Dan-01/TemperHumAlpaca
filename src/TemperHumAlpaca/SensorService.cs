@@ -1,12 +1,6 @@
 using System.Buffers.Binary;
 using HidSharp;
 
-internal static class DeviceConstants
-{
-    public const int VendorId = 0x413D;
-    public const int ProductId = 0x2107;
-}
-
 internal sealed record Measurement(double TemperatureC, double HumidityPercent);
 
 internal sealed record SensorSnapshot(
@@ -125,7 +119,7 @@ internal sealed class SensorService : IAsyncDisposable
         TemperHumReader? reader = null;
         try
         {
-            reader = TemperHumReader.Open();
+            reader = TemperHumReader.Open(_config.DeviceProfile);
             var snapshot = await ReadSnapshotAsync(reader, cancellationToken);
 
             CancellationTokenSource? oldPollCts = null;
@@ -487,62 +481,109 @@ internal sealed class SensorService : IAsyncDisposable
 
 internal sealed class TemperHumReader : IDisposable
 {
-    private static readonly byte[] MeasurementCommand = [0x01, 0x80, 0x33, 0x01, 0x00, 0x00, 0x00, 0x00];
+    private static readonly byte[] TemperXV31MeasurementCommand =
+        [0x01, 0x80, 0x33, 0x01, 0x00, 0x00, 0x00, 0x00];
 
     private readonly HidStream _stream;
     private readonly HidDevice _device;
 
-    private TemperHumReader(HidDevice device, HidStream stream)
+    private TemperHumReader(DeviceProfile profile, HidDevice device, HidStream stream)
     {
+        Profile = profile;
         _device = device;
         _stream = stream;
         _stream.ReadTimeout = 1200;
         _stream.WriteTimeout = 1200;
     }
 
+    public DeviceProfile Profile { get; }
     public string DevicePath => _device.DevicePath;
 
-    public static IReadOnlyList<HidDevice> GetMatchingDevices() =>
-        DeviceList.Local.GetHidDevices(DeviceConstants.VendorId, DeviceConstants.ProductId).ToList();
-
-    public static TemperHumReader Open()
+    public static IReadOnlyList<HidDevice> GetMatchingDevices(string? configuredProfile = null)
     {
-        var devices = GetMatchingDevices();
-        if (devices.Count == 0)
+        var profiles = ResolveProfiles(configuredProfile);
+        return profiles
+            .SelectMany(profile => DeviceList.Local.GetHidDevices(profile.VendorId, profile.ProductId))
+            .DistinctBy(device => device.DevicePath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    public static TemperHumReader Open(string? configuredProfile = null)
+    {
+        var profiles = ResolveProfiles(configuredProfile);
+        var foundKnownVidPid = false;
+        var foundIncompatibleInterfaces = new List<string>();
+
+        foreach (var profile in profiles)
         {
+            var devices = DeviceList.Local.GetHidDevices(profile.VendorId, profile.ProductId).ToList();
+            if (devices.Count == 0)
+            {
+                continue;
+            }
+
+            foundKnownVidPid = true;
+            var compatible = devices
+                .Where(profile.IsCompatibleInterface)
+                .OrderByDescending(device =>
+                    device.DevicePath.Contains(profile.PreferredInterfaceToken, StringComparison.OrdinalIgnoreCase))
+#pragma warning disable CS0612
+                .ThenByDescending(device => device.MaxInputReportLength + device.MaxOutputReportLength)
+#pragma warning restore CS0612
+                .ToList();
+
+            if (compatible.Count == 0)
+            {
+                foundIncompatibleInterfaces.Add(
+                    $"{profile.VidPid}: {devices.Count} interface(s) found, but none met the expected " +
+                    $"input/output report lengths ({profile.MinimumInputReportLength}/{profile.MinimumOutputReportLength}).");
+                continue;
+            }
+
+            foreach (var device in compatible)
+            {
+                if (device.TryOpen(out var stream))
+                {
+                    return new TemperHumReader(profile, device, stream);
+                }
+            }
+
             throw new InvalidOperationException(
-                $"No TEMPerHUM-compatible HID device found (VID {DeviceConstants.VendorId:X4}, PID {DeviceConstants.ProductId:X4}).");
+                $"Supported TEMPerHUM interfaces for profile '{profile.Id}' were found but none could be opened. " +
+                "Close the vendor TEMPerHUM application and try again.");
         }
 
-        var ordered = devices
-            .OrderByDescending(d => d.DevicePath.Contains("mi_01", StringComparison.OrdinalIgnoreCase))
-#pragma warning disable CS0612
-            .ThenByDescending(d => d.MaxInputReportLength >= 8 && d.MaxOutputReportLength >= 8)
-#pragma warning restore CS0612
-            .ToList();
-
-        foreach (var device in ordered)
+        if (foundKnownVidPid)
         {
-            if (device.TryOpen(out var stream))
-            {
-                return new TemperHumReader(device, stream);
-            }
+            throw new InvalidOperationException(
+                "A known TEMPerHUM VID/PID was found, but its HID interface layout does not match the supported profile. " +
+                string.Join(" ", foundIncompatibleInterfaces) + " Run --probe and include its output when requesting support.");
         }
 
         throw new InvalidOperationException(
-            "The matching HID interfaces were found, but none could be opened. " +
-            "Close the vendor TEMPerHUM application and try again.");
+            "No supported TEMPerHUM device profile was detected. " +
+            $"Currently supported: {string.Join(", ", profiles.Select(profile => $"{profile.Id} ({profile.VidPid})"))}. " +
+            "Run --probe to inspect likely TEMPer-family devices.");
     }
 
     public Measurement ReadMeasurement()
     {
+        return Profile.Protocol switch
+        {
+            TemperHumProtocol.TemperXV31 => ReadTemperXV31Measurement(),
+            _ => throw new InvalidOperationException($"Unsupported device protocol: {Profile.Protocol}.")
+        };
+    }
+
+    private Measurement ReadTemperXV31Measurement()
+    {
 #pragma warning disable CS0612
-        var outputLength = Math.Max(_device.MaxOutputReportLength, MeasurementCommand.Length + 1);
+        var outputLength = Math.Max(_device.MaxOutputReportLength, TemperXV31MeasurementCommand.Length + 1);
 #pragma warning restore CS0612
 
         var command = new byte[outputLength];
         command[0] = 0x00;
-        Array.Copy(MeasurementCommand, 0, command, 1, MeasurementCommand.Length);
+        Array.Copy(TemperXV31MeasurementCommand, 0, command, 1, TemperXV31MeasurementCommand.Length);
         _stream.Write(command);
 
         var packets = new List<byte>();
@@ -578,7 +619,7 @@ internal sealed class TemperHumReader : IDisposable
         if (packets.Count < 6)
         {
             throw new InvalidOperationException(
-                $"Sensor returned only {packets.Count} payload byte(s); expected at least 6.");
+                $"Sensor returned only {packets.Count} payload byte(s); expected at least 6 for profile '{Profile.Id}'.");
         }
 
         var data = packets.ToArray();
@@ -598,6 +639,17 @@ internal sealed class TemperHumReader : IDisposable
         }
 
         return new Measurement(temperature, humidity);
+    }
+
+    private static IReadOnlyList<DeviceProfile> ResolveProfiles(string? configuredProfile)
+    {
+        if (string.IsNullOrWhiteSpace(configuredProfile) ||
+            configuredProfile.Equals(DeviceProfiles.Auto, StringComparison.OrdinalIgnoreCase))
+        {
+            return DeviceProfiles.Supported;
+        }
+
+        return [DeviceProfiles.Resolve(configuredProfile)];
     }
 
     private static ReadOnlySpan<byte> StripReportId(ReadOnlySpan<byte> report) =>
