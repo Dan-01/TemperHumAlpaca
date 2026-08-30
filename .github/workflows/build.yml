@@ -23,8 +23,20 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Restore
+      - name: Read build version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$project = Get-Content 'src/TemperHumAlpaca/TemperHumAlpaca.csproj'
+          $version = [string]$project.Project.PropertyGroup.Version
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'Project <Version> is missing.' }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Restore service
         run: dotnet restore src/TemperHumAlpaca/TemperHumAlpaca.csproj
+
+      - name: Restore N.I.N.A. plugin
+        run: dotnet restore src/TemperHumAlpaca.NinaPlugin/TemperHumAlpaca.NinaPlugin.csproj
 
       - name: Publish self-contained win-x64
         run: >-
@@ -35,13 +47,36 @@ jobs:
           -p:PublishSingleFile=true
           -o publish/win-x64
 
+      - name: Build N.I.N.A. plugin
+        run: dotnet build src/TemperHumAlpaca.NinaPlugin/TemperHumAlpaca.NinaPlugin.csproj -c Release --no-restore
+
       - name: Copy sample configuration
         shell: pwsh
         run: Copy-Item src/TemperHumAlpaca/temperhum.json publish/win-x64/temperhum.json -Force
 
+      - name: Stage N.I.N.A. plugin in Windows artifact
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $pluginOutput = Join-Path $PWD 'src/TemperHumAlpaca.NinaPlugin/bin/Release/net8.0-windows7.0'
+          $pluginDll = Join-Path $pluginOutput 'TemperHumAlpaca.NinaPlugin.dll'
+          if (!(Test-Path $pluginDll)) { throw 'TemperHumAlpaca N.I.N.A. plugin DLL was not produced.' }
+
+          $assembly = [System.Reflection.AssemblyName]::GetAssemblyName($pluginDll)
+          $expectedPluginVersion = "$version.0"
+          if ($assembly.Version.ToString() -ne $expectedPluginVersion) {
+            throw "Unexpected N.I.N.A. plugin assembly version: $($assembly.Version); expected $expectedPluginVersion"
+          }
+
+          $pluginStage = Join-Path $PWD 'publish/win-x64/NINA-Plugin'
+          New-Item -ItemType Directory -Path $pluginStage -Force | Out-Null
+          Copy-Item $pluginDll $pluginStage -Force
+          Copy-Item 'docs/NINA_PLUGIN.md' (Join-Path $pluginStage 'README.md') -Force
+
       - name: Smoke test Alpaca server, dashboard and HID diagnostics
         shell: pwsh
         run: |
+          $expectedVersion = '${{ steps.version.outputs.version }}'
           $configPath = Join-Path $PWD 'publish/win-x64/temperhum.json'
           $config = Get-Content $configPath -Raw | ConvertFrom-Json
           if ($config.deviceProfile -ne 'auto') { throw 'Sample configuration must default deviceProfile to auto.' }
@@ -49,6 +84,9 @@ jobs:
           if ($config.forecastHours -ne 12) { throw 'Sample forecast horizon must default to 12 hours.' }
           $config.autoConnect = $false
           $config | ConvertTo-Json | Set-Content $configPath
+
+          $pluginDll = Join-Path $PWD 'publish/win-x64/NINA-Plugin/TemperHumAlpaca.NinaPlugin.dll'
+          if (!(Test-Path $pluginDll)) { throw 'Combined artifact is missing the N.I.N.A. plugin DLL.' }
 
           $exe = Join-Path $PWD 'publish/win-x64/TemperHumAlpaca.exe'
           $probe = (& $exe --probe --vid 413D --pid 2107 2>&1 | Out-String)
@@ -63,6 +101,8 @@ jobs:
             for ($i = 0; $i -lt 20; $i++) {
               try {
                 $management = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/configureddevices' -TimeoutSec 2
+                $description = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/description' -TimeoutSec 2
+                $driverVersion = Invoke-RestMethod 'http://127.0.0.1:11111/api/v1/observingconditions/0/driverversion' -TimeoutSec 2
                 $dashboard = Invoke-WebRequest 'http://127.0.0.1:11112/dashboard' -UseBasicParsing -TimeoutSec 2
                 $status = Invoke-RestMethod 'http://127.0.0.1:11112/api/v1/status' -TimeoutSec 2
                 $history = Invoke-RestMethod 'http://127.0.0.1:11112/api/v1/history' -TimeoutSec 2
@@ -76,6 +116,8 @@ jobs:
 
             if (-not $ready) { throw 'Alpaca HTTP server or dashboard did not become ready.' }
             if ($management.Value[0].DeviceType -ne 'ObservingConditions') { throw 'ConfiguredDevices did not expose ObservingConditions.' }
+            if ($description.Value.ManufacturerVersion -ne $expectedVersion) { throw 'Management version did not match project version.' }
+            if ($driverVersion.Value -ne $expectedVersion) { throw 'DriverVersion did not match project version.' }
             if ($dashboard.StatusCode -ne 200) { throw 'Dashboard did not return HTTP 200.' }
             if ($dashboard.Content -notmatch 'Dew margin') { throw 'Dashboard is missing dew margin display.' }
             if ($dashboard.Content -notmatch 'AstroZap estimate') { throw 'Dashboard is missing AstroZap guidance.' }
@@ -91,7 +133,7 @@ jobs:
             if ($dashboard.Content -notmatch 'Calibrate against reference thermometer') { throw 'Dashboard is missing calibration controls.' }
             if ($history.windowMinutes -ne 120) { throw 'History API window was unexpected.' }
             if ($forecast.enabled -ne $false) { throw 'Forecast API should report disabled from the sample configuration.' }
-            if ($status.version -ne '0.5.0') { throw 'Local status API version did not match 0.5.0.' }
+            if ($status.version -ne $expectedVersion) { throw 'Local status API version did not match project version.' }
             if ($status.connected -ne $false) { throw 'Disconnected status API response was unexpected.' }
 
             # Forecast remains disabled here, so this tests DMS parsing/persistence
@@ -158,12 +200,6 @@ jobs:
             if ($ddDashboard.Content -notmatch 'id="forecastLatitudeSeconds"[^>]*value="30"') { throw 'DD save did not regenerate DMS latitude seconds.' }
             if ($ddDashboard.Content -notmatch 'option value="N" selected') { throw 'DD save did not regenerate north hemisphere.' }
 
-            $description = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/description'
-            if ($description.Value.ManufacturerVersion -ne '0.5.0') { throw 'Management version did not match 0.5.0.' }
-
-            $driverVersion = Invoke-RestMethod 'http://127.0.0.1:11111/api/v1/observingconditions/0/driverversion'
-            if ($driverVersion.Value -ne '0.5.0') { throw 'DriverVersion did not match 0.5.0.' }
-
             $version = Invoke-RestMethod 'http://127.0.0.1:11111/api/v1/observingconditions/0/interfaceversion?ClientTransactionID=42'
             if ($version.Value -ne 2) { throw 'Unexpected ObservingConditions InterfaceVersion.' }
             if ($version.ClientTransactionID -ne 42) { throw 'ClientTransactionID was not echoed.' }
@@ -176,7 +212,7 @@ jobs:
             Copy-Item src/TemperHumAlpaca/temperhum.json $configPath -Force
           }
 
-      - name: Upload Windows artifact
+      - name: Upload combined Windows artifact
         uses: actions/upload-artifact@v6
         with:
           name: TemperHumAlpaca-win-x64

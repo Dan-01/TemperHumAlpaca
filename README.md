@@ -18,6 +18,25 @@ This is the hardware physically validated during development. The tested Windows
 
 Other TEMPer-family identifiers seen in public tooling, including `1A86:E025` and `0C45:7402`, are currently treated as **diagnostic candidates only**. TemperHumAlpaca will report them in probe output but will not send the `413D:2107` measurement protocol to them until a matching device profile has been implemented and validated.
 
+## v0.6.0
+
+v0.6.0 adds the physically validated N.I.N.A. integration:
+
+- separate `TemperHumAlpaca.NinaPlugin.dll` targeting the N.I.N.A. 3.2 stable plugin API
+- dockable **TEMPerHUM Dew Monitor** panel in N.I.N.A.'s Imaging workspace
+- live service/sensor state, temperature, humidity, dew point and dew margin
+- dew-margin trend and risk display
+- current AstroZap power/knob guidance
+- overnight set-and-leave power/knob guidance and forecast details
+- transition-based N.I.N.A. alerts for worsening dew risk, heater increases, sensor disconnect and service loss
+- configurable alert threshold and repeat cooldown
+- optional direct Telegram delivery using an existing bot token/chat ID
+- Windows-DPAPI encrypted Telegram bot-token storage
+- **Test Telegram** and clear-token controls
+- release packaging that includes the plugin inside the normal Windows ZIP and also publishes a plugin-only ZIP
+
+The N.I.N.A. plugin reads the loopback status API; it does not access the USB sensor directly. The Windows service remains the single source of truth for measurements, calibration, dew calculations and forecasting. See `docs/NINA_PLUGIN.md` for installation and settings details.
+
 ## v0.5.0
 
 v0.5.0 adds:
@@ -34,7 +53,7 @@ v0.5.0 adds:
 - optional UKMO 2 km ensemble conservative P10 scenario
 - configurable extra forecast safety margin
 - high-water-mark “set-and-leave” AstroZap recommendation that only rises during a session
-- local machine-readable status/history/forecast APIs for future N.I.N.A. plugin integration
+- local machine-readable status/history/forecast APIs for N.I.N.A. plugin integration
 - explicit HID device profiles and conservative auto-detection
 - `--probe` / `--probe-all` hardware diagnostics for unsupported revisions
 - optional explicit `--profile` selection
@@ -177,9 +196,17 @@ These endpoints deliberately live on the loopback-only dashboard listener rather
 
 ## Releases
 
-Stable versions are published from `master` as tagged GitHub Releases. Download `TemperHumAlpaca-vX.Y.Z-win-x64.zip` from the repository Releases page rather than using a development Actions artifact for normal installation.
+Stable versions are published from `master` as tagged GitHub Releases.
 
-`develop` is the active development branch. Validated changes are promoted to `master`, where the release workflow reads the version from `TemperHumAlpaca.csproj`, creates the matching tag and packages the self-contained Windows build.
+For v0.6.0 and later, the release provides:
+
+- `TemperHumAlpaca-vX.Y.Z-win-x64.zip` — the complete self-contained Windows service package, including `NINA-Plugin\TemperHumAlpaca.NinaPlugin.dll` and its plugin README.
+- `TemperHumAlpaca-vX.Y.Z-NINA-plugin.zip` — the small N.I.N.A. plugin-only package.
+- a SHA-256 checksum file for each ZIP.
+
+Use the tagged Release assets for normal installation rather than development Actions artifacts.
+
+`develop` is the active development branch. Validated changes are promoted to `master`, where the release workflow reads the version from `TemperHumAlpaca.csproj`, validates both the service and N.I.N.A. plugin, creates the matching tag and publishes both packages.
 
 ## Windows service / unattended operation
 
@@ -319,14 +346,17 @@ Temperature and humidity offsets are applied before dew point is calculated.
 
 ## Building
 
-Development requires the .NET 8 SDK. GitHub Actions publishes a self-contained `win-x64` executable, so the target astro PC does **not** need Visual Studio, Visual C++ build tools, Python, Node, the .NET SDK, or a separately installed .NET runtime.
+Development requires the .NET 8 SDK. GitHub Actions publishes a self-contained `win-x64` service executable plus the N.I.N.A. plugin, so the target astro PC does **not** need Visual Studio, Visual C++ build tools, Python, Node, the .NET SDK, or a separately installed .NET runtime.
 
 ```powershell
 dotnet restore src/TemperHumAlpaca/TemperHumAlpaca.csproj
 dotnet build src/TemperHumAlpaca/TemperHumAlpaca.csproj -c Release
+
+dotnet restore src/TemperHumAlpaca.NinaPlugin/TemperHumAlpaca.NinaPlugin.csproj
+dotnet build src/TemperHumAlpaca.NinaPlugin/TemperHumAlpaca.NinaPlugin.csproj -c Release
 ```
 
-CI launches the packaged executable and smoke-tests the Alpaca API, dashboard, local status/history/forecast endpoints, device-profile configuration and read-only HID probe command. Forecast network access is deliberately disabled in CI so external weather-service availability cannot make package validation flaky.
+CI launches the packaged executable and smoke-tests the Alpaca API, dashboard, local status/history/forecast endpoints, device-profile configuration and read-only HID probe command. It also builds and version-validates the N.I.N.A. plugin and verifies that the combined artifact actually contains the plugin DLL. Forecast network access is deliberately disabled in CI so external weather-service availability cannot make package validation flaky.
 
 ## Protocol notes
 
@@ -347,7 +377,9 @@ The implementation was informed by publicly documented behaviour in the MIT-lice
 - **v0.3** — Windows service/autostart and unattended USB reconnect recovery
 - **v0.4** — local environment dashboard, reference-sensor calibration and tagged release packaging
 - **v0.5** — dew-risk/AstroZap guidance, dew history, overnight set-and-leave forecast, local integration APIs and conservative HID compatibility framework
-- **v0.6** — N.I.N.A. plugin panel and alert integration; add further TEMPerHUM profiles only when hardware/protocol data is validated
+- **v0.6** — N.I.N.A. dockable monitor, transition alerts, Telegram remote delivery and unified plugin/service release packaging
+
+Further TEMPerHUM profiles will only be added when hardware/protocol data is validated.
 
 ## License
 
