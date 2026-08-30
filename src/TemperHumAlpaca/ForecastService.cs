@@ -29,6 +29,7 @@ internal sealed class ForecastService : IDisposable
 {
     private const string DeterministicModel = "ukmo_uk_deterministic_2km";
     private const string EnsembleModel = "ukmo_uk_ensemble_2km";
+    private const double EnsembleConservativePercentile = 0.10;
 
     private readonly object _gate = new();
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(12) };
@@ -95,6 +96,7 @@ internal sealed class ForecastService : IDisposable
         {
             lock (_gate)
             {
+                _sessionPowerPercent = null;
                 _outlook = Empty(enabled: false, configured: IsConfigured(config));
             }
             return;
@@ -179,9 +181,9 @@ internal sealed class ForecastService : IDisposable
                             worstAt = conservativeMinimumBeforeSafety == worstEnsemble.AdjustedMarginC
                                 ? worstEnsemble.At
                                 : deterministicAdjusted.MinBy(point => point.AdjustedMarginC)!.At;
-                            conservativePoints = deterministicAdjusted;
-                            source = "UKMO UKV 2 km deterministic + ensemble";
-                            confidence = "High · ensemble worst-member + local bias";
+                            conservativePoints = adjustedEnsemble;
+                            source = "UKMO UKV 2 km deterministic + ensemble P10";
+                            confidence = "High · ensemble P10 + local bias";
                         }
                     }
                 }
@@ -340,27 +342,46 @@ internal sealed class ForecastService : IDisposable
             }
         }
 
-        var result = new List<ForecastPoint>();
-        foreach (var (suffix, temperatureSeries) in temperatures)
+        var sharedMembers = temperatures.Keys
+            .Where(dewPoints.ContainsKey)
+            .ToList();
+        if (sharedMembers.Count == 0)
         {
-            if (!dewPoints.TryGetValue(suffix, out var dewPointSeries))
+            return [];
+        }
+
+        var result = new List<ForecastPoint>();
+        for (var i = 0; i < times.GetArrayLength(); i++)
+        {
+            if (!TryReadUtcTime(times[i], out var at))
             {
                 continue;
             }
 
-            var count = Math.Min(times.GetArrayLength(), Math.Min(temperatureSeries.GetArrayLength(), dewPointSeries.GetArrayLength()));
-            for (var i = 0; i < count; i++)
+            var margins = new List<double>();
+            foreach (var member in sharedMembers)
             {
-                if (!TryReadUtcTime(times[i], out var at) ||
+                var temperatureSeries = temperatures[member];
+                var dewPointSeries = dewPoints[member];
+                if (i >= temperatureSeries.GetArrayLength() || i >= dewPointSeries.GetArrayLength() ||
                     temperatureSeries[i].ValueKind != JsonValueKind.Number ||
                     dewPointSeries[i].ValueKind != JsonValueKind.Number)
                 {
                     continue;
                 }
 
-                var margin = temperatureSeries[i].GetDouble() - dewPointSeries[i].GetDouble();
-                result.Add(new ForecastPoint(at, margin, margin, $"ensemble:{suffix}"));
+                margins.Add(temperatureSeries[i].GetDouble() - dewPointSeries[i].GetDouble());
             }
+
+            if (margins.Count == 0)
+            {
+                continue;
+            }
+
+            margins.Sort();
+            var index = (int)Math.Floor((margins.Count - 1) * EnsembleConservativePercentile);
+            var margin = margins[Math.Clamp(index, 0, margins.Count - 1)];
+            result.Add(new ForecastPoint(at, margin, margin, "ensemble-p10"));
         }
 
         return result;
