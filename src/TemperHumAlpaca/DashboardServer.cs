@@ -21,10 +21,17 @@ internal static class DashboardServer
         builder.WebHost.UseUrls($"http://127.0.0.1:{config.DashboardPort}");
 
         var app = builder.Build();
+        var advisor = new DewAdvisor();
+        var trackingTask = advisor.TrackAsync(sensor, cancellationToken);
 
         app.MapGet("/", () => Results.Redirect("/dashboard"));
         app.MapGet("/dashboard", (HttpRequest request) =>
-            Results.Content(BuildPage(sensor, config, request.Query["message"].ToString()), "text/html; charset=utf-8"));
+            Results.Content(BuildPage(sensor, config, advisor, request.Query["message"].ToString()), "text/html; charset=utf-8"));
+
+        // Local machine-readable endpoint intended for lightweight integrations such
+        // as a future N.I.N.A. plugin. It deliberately lives on the loopback-only
+        // dashboard listener rather than extending the standard Alpaca contract.
+        app.MapGet("/api/v1/status", () => BuildStatus(sensor, advisor));
 
         app.MapPost("/calibrate", async (HttpRequest request) =>
         {
@@ -130,7 +137,65 @@ internal static class DashboardServer
             }
         });
 
-        await app.RunAsync(cancellationToken);
+        try
+        {
+            await app.RunAsync(cancellationToken);
+        }
+        finally
+        {
+            try
+            {
+                await trackingTask;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+        }
+    }
+
+    private static IResult BuildStatus(SensorService sensor, DewAdvisor advisor)
+    {
+        if (!sensor.Connected)
+        {
+            return Results.Json(new
+            {
+                version = AppInfo.Version,
+                connected = false,
+                connecting = sensor.Connecting,
+                lastError = sensor.LastError
+            });
+        }
+
+        try
+        {
+            var snapshot = sensor.Snapshot;
+            var advice = advisor.Evaluate(snapshot);
+            return Results.Json(new
+            {
+                version = AppInfo.Version,
+                connected = true,
+                updatedAt = snapshot.UpdatedAt,
+                temperatureC = snapshot.TemperatureC,
+                humidityPercent = snapshot.HumidityPercent,
+                dewPointC = snapshot.DewPointC,
+                dewMarginC = advice.DewMarginC,
+                dewRisk = advice.Risk,
+                recommendedHeaterPowerPercent = advice.RecommendedPowerPercent,
+                astroZapKnobPosition = advice.KnobPosition,
+                dewMarginTrend = advice.Trend,
+                dewMarginTrendCPerHour = advice.DewMarginTrendCPerHour,
+                advisory = advice.Note
+            });
+        }
+        catch (Exception ex)
+        {
+            return Results.Json(new
+            {
+                version = AppInfo.Version,
+                connected = sensor.Connected,
+                error = ex.Message
+            });
+        }
     }
 
     private static IResult Redirect(string message) =>
@@ -167,13 +232,18 @@ internal static class DashboardServer
         File.Move(tempPath, path, overwrite: true);
     }
 
-    private static string BuildPage(SensorService sensor, AppConfig config, string message)
+    private static string BuildPage(SensorService sensor, AppConfig config, DewAdvisor advisor, string message)
     {
         string status;
         string temperature = "—";
         string humidity = "—";
         string dewPoint = "—";
         string dewMargin = "—";
+        string dewRisk = "—";
+        string heaterPower = "—";
+        string knobPosition = "—";
+        string trend = "—";
+        string trendRate = string.Empty;
         string rawTemperature = "—";
         string rawHumidity = "—";
         string age = "—";
@@ -183,6 +253,7 @@ internal static class DashboardServer
             try
             {
                 var snapshot = sensor.Snapshot;
+                var advice = advisor.Evaluate(snapshot);
                 var rawTempValue = snapshot.TemperatureC - config.TemperatureOffsetC;
                 var rawHumidityValue = snapshot.HumidityPercent - config.HumidityOffsetPercent;
                 var ageSeconds = Math.Max(0, (DateTimeOffset.UtcNow - snapshot.UpdatedAt).TotalSeconds);
@@ -191,7 +262,14 @@ internal static class DashboardServer
                 temperature = $"{snapshot.TemperatureC:F2} °C";
                 humidity = $"{snapshot.HumidityPercent:F2} %";
                 dewPoint = $"{snapshot.DewPointC:F2} °C";
-                dewMargin = $"{snapshot.TemperatureC - snapshot.DewPointC:F2} °C";
+                dewMargin = $"{advice.DewMarginC:F2} °C";
+                dewRisk = advice.Risk;
+                heaterPower = $"~{advice.RecommendedPowerPercent}%";
+                knobPosition = advice.KnobPosition;
+                trend = advice.Trend;
+                trendRate = advice.DewMarginTrendCPerHour is double rate
+                    ? $" ({rate:+0.00;-0.00;0.00} °C/hr)"
+                    : string.Empty;
                 rawTemperature = $"{rawTempValue:F2} °C";
                 rawHumidity = $"{rawHumidityValue:F2} %";
                 age = ageSeconds < 60 ? $"{ageSeconds:F1} s" : $"{ageSeconds / 60.0:F1} min";
@@ -228,13 +306,13 @@ internal static class DashboardServer
           <title>TemperHumAlpaca Dashboard</title>
           <style>
             :root{color-scheme:light dark;--border:#8a8a8a55;--panel:#8881;--good:#2e9b55;--warn:#d18a00}
-            body{font-family:Segoe UI,Arial,sans-serif;max-width:980px;margin:32px auto;padding:0 20px;line-height:1.45}
+            body{font-family:Segoe UI,Arial,sans-serif;max-width:1060px;margin:32px auto;padding:0 20px;line-height:1.45}
             h1{margin-bottom:4px}.sub{opacity:.7;margin-top:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:22px 0}
-            .card,.panel{border:1px solid var(--border);border-radius:12px;background:var(--panel);padding:16px}.label{font-size:.86rem;opacity:.7}.value{font-size:1.8rem;font-weight:650;margin-top:4px}
+            .card,.panel{border:1px solid var(--border);border-radius:12px;background:var(--panel);padding:16px}.label{font-size:.86rem;opacity:.7}.value{font-size:1.8rem;font-weight:650;margin-top:4px}.detail{font-size:.85rem;opacity:.75;margin-top:4px}
             .panel{margin:14px 0}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}label{display:block;font-size:.88rem;margin-bottom:4px}
             input{box-sizing:border-box;width:100%;padding:9px;border:1px solid var(--border);border-radius:7px}button{padding:9px 14px;border-radius:7px;border:1px solid var(--border);cursor:pointer;margin-top:10px}
             code{background:#8882;padding:2px 5px;border-radius:4px}.notice{border-left:4px solid var(--good);padding:10px 12px;background:#2e9b5518;margin:16px 0;border-radius:6px}
-            .small{font-size:.88rem;opacity:.75}.status{font-weight:650}.danger{color:#c84b4b}
+            .small{font-size:.88rem;opacity:.75}.status{font-weight:650}.advisory{border-left:4px solid var(--warn)}
           </style>
         </head>
         <body>
@@ -246,7 +324,17 @@ internal static class DashboardServer
             <div class="card"><div class="label">Temperature</div><div class="value">{{temperature}}</div></div>
             <div class="card"><div class="label">Humidity</div><div class="value">{{humidity}}</div></div>
             <div class="card"><div class="label">Dew point</div><div class="value">{{dewPoint}}</div></div>
-            <div class="card"><div class="label">Dew margin</div><div class="value">{{dewMargin}}</div></div>
+            <div class="card"><div class="label">Dew margin</div><div class="value">{{dewMargin}}</div><div class="detail">{{trend}}{{trendRate}}</div></div>
+          </div>
+
+          <div class="grid">
+            <div class="card"><div class="label">Dew risk</div><div class="value">{{dewRisk}}</div></div>
+            <div class="card"><div class="label">AstroZap estimate</div><div class="value">{{heaterPower}}</div><div class="detail">Knob: {{knobPosition}}</div></div>
+          </div>
+
+          <div class="panel advisory">
+            <strong>Heater guidance is advisory.</strong>
+            <div class="small">The estimate maps dew margin to the AstroZap dual-channel controller's approximate 5–95% duty-cycle range and adjusts modestly when the margin is trending down. Because TemperHumAlpaca measures ambient air rather than the objective itself, use this as a starting knob position, not a guarantee against dew.</div>
           </div>
 
           <div class="panel">
@@ -281,7 +369,8 @@ internal static class DashboardServer
 
           <div class="panel small">
             <strong>Alpaca:</strong> HTTP {{config.AlpacaPort}}, discovery UDP {{config.DiscoveryPort}}, ObservingConditions 0<br>
-            <strong>Dashboard:</strong> localhost:{{config.DashboardPort}} · <strong>Unique ID:</strong> <code>{{WebUtility.HtmlEncode(config.UniqueId)}}</code><br>
+            <strong>Dashboard:</strong> localhost:{{config.DashboardPort}} · <strong>status API:</strong> <code>/api/v1/status</code><br>
+            <strong>Unique ID:</strong> <code>{{WebUtility.HtmlEncode(config.UniqueId)}}</code><br>
             Configuration: <code>{{WebUtility.HtmlEncode(Path.Combine(AppContext.BaseDirectory, "temperhum.json"))}}</code>
           </div>
         </body>
