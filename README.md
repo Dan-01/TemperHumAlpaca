@@ -9,26 +9,84 @@ Initial target hardware:
 - Tested Windows HID interface: `MI_01`
 - Known compatible TEMPerX/TEMPerHUM protocol family
 
-## v0.4.0
+## v0.5.0
 
-v0.4.0 adds a local observatory dashboard and calibration workflow on top of the unattended Windows service:
+v0.5.0 adds advisory dew-risk and manual AstroZap heater guidance on top of the v0.4 dashboard/calibration workflow:
 
 - live temperature, relative humidity and dew point
 - dew-point margin (`temperature - dew point`)
+- dew-risk classification
+- estimated AstroZap dual-channel heater power
+- approximate Low-to-High knob position
+- two-hour in-memory dew-margin history
+- trend detection after sufficient history is collected
+- modest extra heater recommendation when dew margin is falling
+- 0.2 °C hysteresis around heater-power thresholds to reduce recommendation flicker
+- local machine-readable status API for future N.I.N.A. plugin integration
 - reading age, raw USB readings, connection state and last sensor error
-- manual refresh and USB reconnect controls
 - calibration against a co-located reference thermometer/hygrometer
 - automatic calculation and persistence of calibration offsets
 - manual offset editing
-- tagged GitHub Releases with a self-contained Windows ZIP and SHA-256 checksum
 
-The dashboard is deliberately bound to loopback only because it can modify calibration settings:
+The dashboard remains deliberately bound to loopback only because it can modify calibration settings:
 
 ```text
 http://localhost:11112/dashboard
 ```
 
-The Alpaca API remains on port `11111` and continues to work independently if the dashboard is unavailable.
+The local v0.5 integration endpoint is:
+
+```text
+http://localhost:11112/api/v1/status
+```
+
+The standard Alpaca API remains on port `11111` and continues to work independently if the dashboard is unavailable.
+
+## Dew-risk and AstroZap guidance
+
+TemperHumAlpaca calculates the dew margin from calibrated ambient temperature and dew point. The smaller the margin, the greater the risk that radiatively cooled optics can reach the dew point.
+
+The initial AstroZap recommendation curve is:
+
+| Dew margin | Risk | Base heater estimate |
+| --- | --- | ---: |
+| > 8 °C | Very low | 5% |
+| 5–8 °C | Low | 15% |
+| 3–5 °C | Moderate | 25% |
+| 2–3 °C | Elevated | 35% |
+| 1–2 °C | High | 50% |
+| 0–1 °C | Very high | 70% |
+| ≤ 0 °C | Dew likely | 95% |
+
+The Astrozap AZ-720 dual-channel controller is documented by Astrozap as varying each channel from about 5% duty cycle at Low to about 95% at High. TemperHumAlpaca maps the estimate to an approximate physical knob position such as `About 1/3` or `About 1/2`.
+
+After at least ten minutes of readings, v0.5 estimates the rate at which dew margin is changing. A falling margin can add 5–10 percentage points to the base recommendation; a rapidly rising margin can reduce it slightly. A small hysteresis band prevents the base heater recommendation bouncing when the dew margin sits directly on a threshold.
+
+This is **advisory only**. The TEMPerHUM measures ambient air rather than the objective itself, and the manual AstroZap controller has no objective-temperature feedback. Radiative cooling, wind, heater strap placement, telescope thermal mass and local conditions can all change the power actually required.
+
+## Local status API
+
+`GET /api/v1/status` returns JSON intended for lightweight local integrations. When connected it includes:
+
+```json
+{
+  "version": "0.5.0",
+  "connected": true,
+  "updatedAt": "2026-08-30T00:00:00+00:00",
+  "temperatureC": 10.0,
+  "humidityPercent": 85.0,
+  "dewPointC": 7.5,
+  "dewMarginC": 2.5,
+  "dewRisk": "ELEVATED",
+  "recommendedHeaterPowerPercent": 35,
+  "astroZapKnobPosition": "About 1/3",
+  "dewMarginTrend": "Stable",
+  "dewMarginTrendCPerHour": 0.0,
+  "advisory": "Advisory starting point only; the controller has no objective-temperature feedback."
+}
+```
+
+The endpoint deliberately lives on the loopback-only dashboard listener rather than adding non-standard properties to the ASCOM Alpaca `ObservingConditions` interface.
 
 ## Releases
 
@@ -72,7 +130,7 @@ The server also provides:
 
 ## Recommended installation on the astro PC
 
-1. Download the latest Windows ZIP from **GitHub Releases**.
+1. Download the latest Windows ZIP from **GitHub Releases** for stable versions, or a validated `develop` Actions artifact when testing an unreleased version.
 2. Extract it anywhere convenient.
 3. Close the vendor TEMPerHUM application.
 4. Open **PowerShell as Administrator** in the extracted folder.
@@ -206,7 +264,7 @@ dotnet restore src/TemperHumAlpaca/TemperHumAlpaca.csproj
 dotnet build src/TemperHumAlpaca/TemperHumAlpaca.csproj -c Release
 ```
 
-CI launches the packaged executable and smoke-tests both the Alpaca API and the local dashboard. The release workflow repeats the packaged-binary validation before publishing a release.
+CI launches the packaged executable and smoke-tests the Alpaca API, local dashboard and local status endpoint. The release workflow repeats packaged-binary validation before publishing a stable release.
 
 ## Protocol notes
 
@@ -220,7 +278,8 @@ The implementation was informed by the publicly documented behaviour in the MIT-
 - **v0.2** — ASCOM Alpaca `ObservingConditions` HTTP API and discovery
 - **v0.3** — Windows service/autostart and unattended USB reconnect recovery
 - **v0.4** — local environment dashboard, reference-sensor calibration and tagged release packaging
-- **v0.5** — broader ASCOM conformance tests and packaging/configuration polish
+- **v0.5** — dew-risk classification, AstroZap manual-heater guidance, trend analysis and local integration API
+- **v0.6** — N.I.N.A. plugin panel and alert integration
 
 ## License
 
