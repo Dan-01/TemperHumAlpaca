@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using System.Text.Json;
 
@@ -42,11 +43,22 @@ internal sealed class TemperHumApp
             return WindowsServiceSupport.PrintStatus();
         }
 
+        if (options.Probe)
+        {
+            return DeviceProbe.Run(options.ProbeAll, options.VendorId, options.ProductId);
+        }
+
         var config = LoadConfig();
+        if (!string.IsNullOrWhiteSpace(options.DeviceProfile))
+        {
+            config.DeviceProfile = options.DeviceProfile;
+        }
+
+        ValidateConfiguredProfile(config.DeviceProfile);
 
         if (options.List)
         {
-            ListDevices();
+            ListDevices(config.DeviceProfile);
             return 0;
         }
 
@@ -69,15 +81,27 @@ internal sealed class TemperHumApp
         return await RunServerAsync(config, cts.Token);
     }
 
+    private static void ValidateConfiguredProfile(string? profileId)
+    {
+        if (string.IsNullOrWhiteSpace(profileId) ||
+            profileId.Equals(DeviceProfiles.Auto, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _ = DeviceProfiles.Resolve(profileId);
+    }
+
     private static int RunOnce(AppConfig config)
     {
         Console.WriteLine($"TemperHumAlpaca v{AppInfo.Version} USB test");
-        Console.WriteLine($"Target: VID {DeviceConstants.VendorId:X4} / PID {DeviceConstants.ProductId:X4}");
+        Console.WriteLine($"Device profile: {config.DeviceProfile}");
         Console.WriteLine("Close the vendor TEMPerHUM application before running this tool.\n");
 
         try
         {
-            using var reader = TemperHumReader.Open();
+            using var reader = TemperHumReader.Open(config.DeviceProfile);
+            Console.WriteLine($"Profile: {reader.Profile.Id}");
             Console.WriteLine($"Opened HID interface: {reader.DevicePath}\n");
             PrintMeasurement(reader.ReadMeasurement(), config);
             return 0;
@@ -85,7 +109,7 @@ internal sealed class TemperHumApp
         catch (Exception ex)
         {
             Console.Error.WriteLine($"ERROR: {ex.Message}");
-            Console.Error.WriteLine("Run with --list to inspect all matching HID interfaces.");
+            Console.Error.WriteLine("Run with --probe to inspect likely TEMPer-family HID interfaces.");
             return 1;
         }
     }
@@ -93,12 +117,14 @@ internal sealed class TemperHumApp
     private static async Task<int> RunMonitorAsync(AppConfig config)
     {
         Console.WriteLine($"TemperHumAlpaca v{AppInfo.Version} USB monitor");
+        Console.WriteLine($"Device profile: {config.DeviceProfile}");
         Console.WriteLine("Press Ctrl+C to stop.\n");
 
         using var cts = CreateConsoleCancellation();
         try
         {
-            using var reader = TemperHumReader.Open();
+            using var reader = TemperHumReader.Open(config.DeviceProfile);
+            Console.WriteLine($"Profile: {reader.Profile.Id}");
             Console.WriteLine($"Opened HID interface: {reader.DevicePath}\n");
 
             while (!cts.IsCancellationRequested)
@@ -200,6 +226,11 @@ internal sealed class TemperHumApp
             }
         }
 
+        if (string.IsNullOrWhiteSpace(config.DeviceProfile))
+        {
+            config.DeviceProfile = DeviceProfiles.Auto;
+        }
+
         if (string.IsNullOrWhiteSpace(config.UniqueId))
         {
             config.UniqueId = Guid.NewGuid().ToString("D");
@@ -216,12 +247,13 @@ internal sealed class TemperHumApp
         return config;
     }
 
-    private static void ListDevices()
+    private static void ListDevices(string? profileId)
     {
-        var devices = TemperHumReader.GetMatchingDevices();
+        var devices = TemperHumReader.GetMatchingDevices(profileId);
         if (devices.Count == 0)
         {
-            Console.WriteLine($"No HID devices found for VID {DeviceConstants.VendorId:X4} / PID {DeviceConstants.ProductId:X4}.");
+            Console.WriteLine("No HID interfaces matched the configured supported device profile.");
+            Console.WriteLine("Run --probe to inspect likely TEMPer-family devices or --probe-all for all HID devices.");
             return;
         }
 
@@ -229,7 +261,9 @@ internal sealed class TemperHumApp
         for (var i = 0; i < devices.Count; i++)
         {
             var device = devices[i];
-            Console.WriteLine($"[{i}] {device.DevicePath}");
+            Console.WriteLine($"[{i}] VID:PID {device.VendorID:X4}:{device.ProductID:X4}");
+            Console.WriteLine($"    support={DeviceProfiles.SupportLabel(device)}");
+            Console.WriteLine($"    path={device.DevicePath}");
 #pragma warning disable CS0612
             Console.WriteLine($"    input={device.MaxInputReportLength}, output={device.MaxOutputReportLength}, feature={device.MaxFeatureReportLength}");
 #pragma warning restore CS0612
@@ -270,6 +304,7 @@ internal sealed class AppConfig
     public bool DiscoveryEnabled { get; set; } = true;
     public int DiscoveryPort { get; set; } = 32227;
     public bool AutoConnect { get; set; } = true;
+    public string DeviceProfile { get; set; } = DeviceProfiles.Auto;
     public string UniqueId { get; set; } = string.Empty;
 }
 
@@ -278,22 +313,73 @@ internal sealed class Arguments
     public bool Once { get; init; }
     public bool List { get; init; }
     public bool Monitor { get; init; }
+    public bool Probe { get; init; }
+    public bool ProbeAll { get; init; }
     public bool Service { get; init; }
     public bool InstallService { get; init; }
     public bool UninstallService { get; init; }
     public bool ServiceStatus { get; init; }
+    public int? VendorId { get; init; }
+    public int? ProductId { get; init; }
+    public string? DeviceProfile { get; init; }
 
-    public static Arguments Parse(string[] args) => new()
+    public static Arguments Parse(string[] args)
     {
-        Once = Has(args, "--once"),
-        List = Has(args, "--list"),
-        Monitor = Has(args, "--monitor"),
-        Service = Has(args, "--service"),
-        InstallService = Has(args, "--install-service"),
-        UninstallService = Has(args, "--uninstall-service"),
-        ServiceStatus = Has(args, "--service-status")
-    };
+        var probeAll = Has(args, "--probe-all");
+        return new Arguments
+        {
+            Once = Has(args, "--once"),
+            List = Has(args, "--list"),
+            Monitor = Has(args, "--monitor"),
+            Probe = Has(args, "--probe") || probeAll,
+            ProbeAll = probeAll,
+            Service = Has(args, "--service"),
+            InstallService = Has(args, "--install-service"),
+            UninstallService = Has(args, "--uninstall-service"),
+            ServiceStatus = Has(args, "--service-status"),
+            VendorId = ParseHexOption(args, "--vid"),
+            ProductId = ParseHexOption(args, "--pid"),
+            DeviceProfile = GetOption(args, "--profile")
+        };
+    }
 
     private static bool Has(string[] args, string value) =>
         args.Any(a => a.Equals(value, StringComparison.OrdinalIgnoreCase));
+
+    private static string? GetOption(string[] args, string option)
+    {
+        for (var i = 0; i < args.Length; i++)
+        {
+            if (!args[i].Equals(option, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (i + 1 >= args.Length || args[i + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                throw new ArgumentException($"{option} requires a value.");
+            }
+
+            return args[i + 1];
+        }
+
+        return null;
+    }
+
+    private static int? ParseHexOption(string[] args, string option)
+    {
+        var raw = GetOption(args, option);
+        if (raw is null)
+        {
+            return null;
+        }
+
+        raw = raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? raw[2..] : raw;
+        if (!int.TryParse(raw, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var value) || value is < 0 or > 0xFFFF)
+        {
+            throw new ArgumentException($"{option} must be a 16-bit hexadecimal value such as 413D or 0x413D.");
+        }
+
+        return value;
+    }
 }
