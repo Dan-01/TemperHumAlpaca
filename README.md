@@ -25,29 +25,36 @@ v0.5.0 adds:
 - dew-risk classification
 - estimated AstroZap dual-channel heater power
 - approximate Low-to-High knob position
-- two-hour in-memory dew-margin history
+- two-hour in-memory dew-margin history and dashboard chart
 - trend detection after sufficient history is collected
 - modest trend-based heater adjustment
 - hysteresis to reduce recommendation flicker
-- local machine-readable status API for future N.I.N.A. plugin integration
+- optional UK Met Office 2 km overnight weather forecast via Open-Meteo
+- local sensor-vs-forecast dew-margin bias correction
+- optional UKMO 2 km ensemble conservative P10 scenario
+- configurable extra forecast safety margin
+- high-water-mark “set-and-leave” AstroZap recommendation that only rises during a session
+- local machine-readable status/history/forecast APIs for future N.I.N.A. plugin integration
 - explicit HID device profiles and conservative auto-detection
 - `--probe` / `--probe-all` hardware diagnostics for unsupported revisions
 - optional explicit `--profile` selection
 - existing dashboard/calibration, Alpaca and Windows-service functionality
 
-The dashboard remains deliberately bound to loopback only because it can modify calibration settings:
+The dashboard remains deliberately bound to loopback only because it can modify calibration and forecast settings:
 
 ```text
 http://localhost:11112/dashboard
 ```
 
-The local integration endpoint is:
+Local integration endpoints are:
 
 ```text
 http://localhost:11112/api/v1/status
+http://localhost:11112/api/v1/history
+http://localhost:11112/api/v1/forecast
 ```
 
-The standard Alpaca API remains on port `11111` and continues to work independently if the dashboard is unavailable.
+The standard Alpaca API remains on port `11111` and continues to work independently if the dashboard or external forecast service is unavailable.
 
 ## HID compatibility diagnostics
 
@@ -121,31 +128,52 @@ The initial AstroZap recommendation curve is:
 
 The AstroZap AZ-720 dual-channel controller is documented as varying each channel from roughly 5% duty cycle at Low to roughly 95% at High. TemperHumAlpaca maps the estimate to an approximate knob position such as `About 1/3` or `About 1/2`.
 
-After at least ten minutes of readings, v0.5 estimates the rate at which dew margin is changing. A falling margin can increase the recommendation modestly; a rapidly rising margin can reduce it slightly.
+After at least ten minutes of readings, v0.5 estimates the rate at which dew margin is changing. A falling margin can increase the current recommendation modestly; a rapidly rising margin can reduce it slightly.
 
 This guidance is **advisory only**. The TEMPerHUM measures ambient air rather than objective temperature, and a manual AstroZap controller has no objective-temperature feedback. Radiative cooling, wind, strap placement and telescope thermal mass can all change the power actually required.
 
-## Local status API
+## Overnight set-and-leave forecast
 
-`GET /api/v1/status` returns JSON intended for lightweight local integrations. When connected it includes values such as:
+The optional forecast is designed for a manually controlled heater: choose one conservative setting near the start of an imaging session rather than repeatedly changing the knob overnight.
 
-```json
-{
-  "version": "0.5.0",
-  "connected": true,
-  "temperatureC": 10.0,
-  "humidityPercent": 85.0,
-  "dewPointC": 7.5,
-  "dewMarginC": 2.5,
-  "dewRisk": "ELEVATED",
-  "recommendedHeaterPowerPercent": 35,
-  "astroZapKnobPosition": "About 1/3",
-  "dewMarginTrend": "Stable",
-  "dewMarginTrendCPerHour": 0.0
-}
+When enabled, TemperHumAlpaca retrieves hourly 2 m temperature and dew point from Open-Meteo using the UK Met Office UKV 2 km model. The default forecast horizon is 12 hours.
+
+The calculation is deliberately local-bias aware:
+
+```text
+local bias = measured dew margin now - forecast dew margin now
+adjusted future margin = forecast future margin + local bias
 ```
 
-The endpoint deliberately lives on the loopback-only dashboard listener rather than adding non-standard properties to ASCOM Alpaca `ObservingConditions`.
+For example, if the forecast currently expects an 8.0 °C dew margin but the telescope sensor measures 6.2 °C, the forecast is treated as roughly 1.8 °C too optimistic and future margins are shifted down by that amount.
+
+When UKMO 2 km ensemble data is available, the software calculates the 10th-percentile dew margin across ensemble members at each forecast hour. This intentionally avoids sizing the heater from one extreme ensemble outlier while still representing a conservative weather scenario. The worst adjusted hour within the configured horizon is then used.
+
+Finally, the configured extra safety margin is subtracted. The default is `0.5 °C`:
+
+```text
+conservative margin = min(current local margin, worst adjusted forecast margin) - safety margin
+```
+
+That conservative margin is mapped through the same AstroZap power curve.
+
+The dashboard exposes both the instantaneous recommendation and the **Overnight heater** recommendation. The overnight recommendation is a session high-water mark: if a later forecast becomes worse it can rise, but it does not automatically fall when conditions improve. This supports setting the manual controller once and leaving it alone. The high-water mark can be reset manually from the dashboard and is naturally reset when the service restarts.
+
+If ensemble data is unavailable, TemperHumAlpaca falls back to the deterministic UKV forecast plus local bias and safety margin. If all forecast access fails, the sensor, dashboard, Alpaca device and current heater guidance continue operating; the last forecast error is shown separately.
+
+Forecasting is disabled by default. Latitude/longitude are not committed to this repository. They are stored only in the local installed `temperhum.json` and are sent to Open-Meteo only when forecasting is enabled.
+
+Forecast data is provided through Open-Meteo using UK Met Office model data. UKMO UKV provides hourly 2 km forecast coverage for the UK and Ireland.
+
+## Local APIs
+
+`GET /api/v1/status` returns current calibrated environmental values, dew guidance, history count and the current forecast outlook.
+
+`GET /api/v1/history` returns the in-memory two-hour dew-margin history.
+
+`GET /api/v1/forecast` returns the overnight forecast state, local bias, conservative minimum dew margin, expected worst time, forecast recommendation and session high-water-mark recommendation.
+
+These endpoints deliberately live on the loopback-only dashboard listener rather than adding non-standard properties to ASCOM Alpaca `ObservingConditions`.
 
 ## Releases
 
@@ -161,7 +189,7 @@ The bridge supports:
 - automatic startup with Windows
 - Service Control Manager restart recovery
 - automatic USB reconnect after boot-time delays or later disconnect/reconnect events
-- preservation of installed calibration, device profile and Alpaca UniqueID across upgrades
+- preservation of installed calibration, device profile, forecast settings and Alpaca UniqueID across upgrades
 
 Install from an extracted release/development build using Administrator PowerShell:
 
@@ -270,11 +298,18 @@ Sample configuration:
   "discoveryPort": 32227,
   "autoConnect": true,
   "deviceProfile": "auto",
+  "forecastEnabled": false,
+  "forecastLatitude": null,
+  "forecastLongitude": null,
+  "forecastHours": 12,
+  "forecastRefreshMinutes": 30,
+  "forecastSafetyMarginC": 0.5,
+  "forecastUseEnsemble": true,
   "uniqueId": ""
 }
 ```
 
-Older installed configuration files that do not contain `deviceProfile` automatically default to `auto` when loaded.
+Older installed configuration files that do not contain the newer device/forecast fields use the in-code defaults when loaded. Forecasting therefore remains disabled until explicitly configured.
 
 `reconnectIntervalSeconds` controls how often the bridge retries a desired USB connection. A deliberate disconnect from an Alpaca client remains disconnected.
 
@@ -291,7 +326,7 @@ dotnet restore src/TemperHumAlpaca/TemperHumAlpaca.csproj
 dotnet build src/TemperHumAlpaca/TemperHumAlpaca.csproj -c Release
 ```
 
-CI launches the packaged executable and smoke-tests the Alpaca API, dashboard, local status endpoint, device-profile configuration and read-only HID probe command.
+CI launches the packaged executable and smoke-tests the Alpaca API, dashboard, local status/history/forecast endpoints, device-profile configuration and read-only HID probe command. Forecast network access is deliberately disabled in CI so external weather-service availability cannot make package validation flaky.
 
 ## Protocol notes
 
@@ -311,7 +346,7 @@ The implementation was informed by publicly documented behaviour in the MIT-lice
 - **v0.2** — ASCOM Alpaca `ObservingConditions` HTTP API and discovery
 - **v0.3** — Windows service/autostart and unattended USB reconnect recovery
 - **v0.4** — local environment dashboard, reference-sensor calibration and tagged release packaging
-- **v0.5** — dew-risk/AstroZap guidance, trend analysis, local integration API and conservative HID compatibility framework
+- **v0.5** — dew-risk/AstroZap guidance, dew history, overnight set-and-leave forecast, local integration APIs and conservative HID compatibility framework
 - **v0.6** — N.I.N.A. plugin panel and alert integration; add further TEMPerHUM profiles only when hardware/protocol data is validated
 
 ## License
