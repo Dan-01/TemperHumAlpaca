@@ -9,6 +9,7 @@
     <ImportWindowsDesktopTargets>true</ImportWindowsDesktopTargets>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <Nullable>enable</Nullable>
     <AssemblyTitle>TemperHumAlpaca</AssemblyTitle>
     <Title>TemperHumAlpaca</Title>
     <Authors>Dan</Authors>

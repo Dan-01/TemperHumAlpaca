@@ -229,7 +229,9 @@ public sealed class TemperHumDockable : DockableVM, IDisposable
         LastError = error;
         LastUpdated = $"Last attempt {DateTime.Now:HH:mm:ss}";
 
-        if (_hasSuccessfulReading && wasOnline && GetBool(nameof(TemperHumPlugin.AlertOnServiceLoss), true))
+        if (_hasSuccessfulReading && wasOnline &&
+            GetBool(nameof(TemperHumPlugin.AlertsEnabled), true) &&
+            GetBool(nameof(TemperHumPlugin.AlertOnServiceLoss), true))
         {
             ShowWarningWithCooldown(
                 ref _lastServiceAlert,
