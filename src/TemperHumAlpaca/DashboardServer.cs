@@ -134,8 +134,8 @@ internal static class DashboardServer
                 var form = await request.ReadFormAsync(cancellationToken);
                 var enabled = form.ContainsKey("forecastEnabled");
                 var useEnsemble = form.ContainsKey("forecastUseEnsemble");
-                var latitude = ParseNullableDouble(form["forecastLatitude"]);
-                var longitude = ParseNullableDouble(form["forecastLongitude"]);
+                var latitude = CoordinateParser.ParseNullable(form["forecastLatitude"], CoordinateAxis.Latitude);
+                var longitude = CoordinateParser.ParseNullable(form["forecastLongitude"], CoordinateAxis.Longitude);
                 var hours = ParseInt(form["forecastHours"], "Forecast horizon");
                 var refreshMinutes = ParseInt(form["forecastRefreshMinutes"], "Forecast refresh interval");
                 var safetyMargin = ParseDouble(form["forecastSafetyMarginC"], "Forecast safety margin");
@@ -614,20 +614,20 @@ internal static class DashboardServer
 
           <div class="panel">
             <h2>Overnight forecast settings</h2>
-            <p class="small">Coordinates are stored only in the local <code>temperhum.json</code>. When forecasting is enabled they are sent to Open-Meteo to retrieve UK Met Office forecast data.</p>
+            <p class="small">Coordinates are stored only in the local <code>temperhum.json</code>. Enter decimal degrees or degrees/minutes/seconds (DMS), for example <code>51.6367</code> or <code>51°38'12&quot;N</code>. When forecasting is enabled the normalized coordinates are sent to Open-Meteo to retrieve UK Met Office forecast data.</p>
             <form method="post" action="/forecast-settings">
               <label><input name="forecastEnabled" type="checkbox" {{forecastEnabledChecked}}>Enable overnight forecast</label>
               <label><input name="forecastUseEnsemble" type="checkbox" {{forecastEnsembleChecked}}>Use conservative UKMO 2 km ensemble P10 when available</label>
               <div class="row">
-                <div><label for="forecastLatitude">Latitude</label><input id="forecastLatitude" name="forecastLatitude" type="number" step="0.000001" min="-90" max="90" value="{{forecastLatitude}}"></div>
-                <div><label for="forecastLongitude">Longitude</label><input id="forecastLongitude" name="forecastLongitude" type="number" step="0.000001" min="-180" max="180" value="{{forecastLongitude}}"></div>
+                <div><label for="forecastLatitude">Latitude</label><input id="forecastLatitude" name="forecastLatitude" type="text" value="{{forecastLatitude}}" placeholder="51.6367 or 51°38'12&quot;N"></div>
+                <div><label for="forecastLongitude">Longitude</label><input id="forecastLongitude" name="forecastLongitude" type="text" value="{{forecastLongitude}}" placeholder="-0.3625 or 0°21'45&quot;W"></div>
                 <div><label for="forecastHours">Horizon (hours)</label><input id="forecastHours" name="forecastHours" type="number" min="6" max="24" step="1" value="{{config.ForecastHours}}" required></div>
                 <div><label for="forecastRefreshMinutes">Refresh (minutes)</label><input id="forecastRefreshMinutes" name="forecastRefreshMinutes" type="number" min="5" max="180" step="1" value="{{config.ForecastRefreshMinutes}}" required></div>
                 <div><label for="forecastSafetyMarginC">Extra safety margin (°C)</label><input id="forecastSafetyMarginC" name="forecastSafetyMarginC" type="number" min="0" max="5" step="0.1" value="{{config.ForecastSafetyMarginC.ToString("0.0", CultureInfo.InvariantCulture)}}" required></div>
               </div>
               <button type="submit">Save and refresh forecast</button>
             </form>
-            <p class="small">Forecast data: Open-Meteo using UK Met Office UKV/ensemble models. UKV provides hourly 2 km data across the UK and Ireland.</p>
+            <p class="small">Accepted coordinate examples: <code>51.6367</code>, <code>51.6367 N</code>, <code>51°38'12&quot;N</code>, or <code>51 38 12 N</code>. Forecast data: Open-Meteo using UK Met Office UKV/ensemble models.</p>
           </div>
 
           <div class="panel">
