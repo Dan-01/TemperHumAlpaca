@@ -82,11 +82,28 @@ jobs:
             if ($dashboard.Content -notmatch 'Dew margin history') { throw 'Dashboard is missing dew margin history.' }
             if ($dashboard.Content -notmatch 'Overnight set-and-leave outlook') { throw 'Dashboard is missing overnight forecast outlook.' }
             if ($dashboard.Content -notmatch 'Overnight forecast settings') { throw 'Dashboard is missing forecast settings.' }
+            if ($dashboard.Content -notmatch 'degrees/minutes/seconds') { throw 'Dashboard is missing DMS coordinate guidance.' }
             if ($dashboard.Content -notmatch 'Calibrate against reference thermometer') { throw 'Dashboard is missing calibration controls.' }
             if ($history.windowMinutes -ne 120) { throw 'History API window was unexpected.' }
             if ($forecast.enabled -ne $false) { throw 'Forecast API should report disabled from the sample configuration.' }
             if ($status.version -ne '0.5.0') { throw 'Local status API version did not match 0.5.0.' }
             if ($status.connected -ne $false) { throw 'Disconnected status API response was unexpected.' }
+
+            # Forecast remains disabled here, so this tests DMS parsing and persistence
+            # without making any external weather request during CI.
+            $dmsForm = @{
+              forecastLatitude = '51 38 12 N'
+              forecastLongitude = '0 21 45 W'
+              forecastHours = '12'
+              forecastRefreshMinutes = '30'
+              forecastSafetyMarginC = '0.5'
+            }
+            $dmsResponse = Invoke-WebRequest 'http://127.0.0.1:11112/forecast-settings' -Method Post -Body $dmsForm -UseBasicParsing -TimeoutSec 5
+            if ($dmsResponse.StatusCode -ne 200) { throw 'DMS forecast settings request did not complete successfully.' }
+            $saved = Get-Content $configPath -Raw | ConvertFrom-Json
+            if ([math]::Abs([double]$saved.forecastLatitude - 51.6366667) -gt 0.00001) { throw 'DMS latitude was not normalized correctly.' }
+            if ([math]::Abs([double]$saved.forecastLongitude - (-0.3625)) -gt 0.00001) { throw 'DMS longitude was not normalized correctly.' }
+            if ($saved.forecastEnabled -ne $false) { throw 'DMS parsing smoke test unexpectedly enabled forecasting.' }
 
             $description = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/description'
             if ($description.Value.ManufacturerVersion -ne '0.5.0') { throw 'Management version did not match 0.5.0.' }
