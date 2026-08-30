@@ -179,8 +179,8 @@ internal static class DashboardServer
                 config.ForecastUseEnsemble = useEnsemble;
                 SaveConfig(config);
 
-                forecast.ResetSessionRecommendation();
                 await forecast.RefreshNowAsync(sensor, config, cancellationToken);
+                forecast.ResetSessionRecommendation();
                 return Redirect(enabled
                     ? "Overnight forecast settings saved and forecast refreshed."
                     : "Overnight forecasting disabled.");
@@ -589,7 +589,7 @@ internal static class DashboardServer
             </div>
             <div class="small"><strong>Status:</strong> {{forecastState}} · <strong>confidence:</strong> {{forecastConfidence}} · <strong>updated:</strong> {{forecastUpdated}}</div>
             {{(string.IsNullOrWhiteSpace(forecastError) ? string.Empty : $"<div class=\"small\">Last forecast error: {forecastError}</div>")}}
-            <p class="small">The overnight value is a high-water mark: it can rise if the forecast worsens, but it will not automatically fall during the session. The conservative margin uses the local sensor bias, the worst UKMO 2 km ensemble member when available, and the configured safety margin.</p>
+            <p class="small">The overnight value is a high-water mark: it can rise if the forecast worsens, but it will not automatically fall during the session. The conservative margin uses the local sensor bias, the 10th-percentile UKMO 2 km ensemble dew margin when available, and the configured safety margin.</p>
             <form method="post" action="/forecast-refresh" style="display:inline"><button type="submit">Refresh forecast</button></form>
             <form method="post" action="/forecast-reset" style="display:inline"><button type="submit">Reset session high-water mark</button></form>
           </div>
@@ -617,7 +617,7 @@ internal static class DashboardServer
             <p class="small">Coordinates are stored only in the local <code>temperhum.json</code>. When forecasting is enabled they are sent to Open-Meteo to retrieve UK Met Office forecast data.</p>
             <form method="post" action="/forecast-settings">
               <label><input name="forecastEnabled" type="checkbox" {{forecastEnabledChecked}}>Enable overnight forecast</label>
-              <label><input name="forecastUseEnsemble" type="checkbox" {{forecastEnsembleChecked}}>Use UKMO 2 km ensemble worst-member when available</label>
+              <label><input name="forecastUseEnsemble" type="checkbox" {{forecastEnsembleChecked}}>Use conservative UKMO 2 km ensemble P10 when available</label>
               <div class="row">
                 <div><label for="forecastLatitude">Latitude</label><input id="forecastLatitude" name="forecastLatitude" type="number" step="0.000001" min="-90" max="90" value="{{forecastLatitude}}"></div>
                 <div><label for="forecastLongitude">Longitude</label><input id="forecastLongitude" name="forecastLongitude" type="number" step="0.000001" min="-180" max="180" value="{{forecastLongitude}}"></div>
