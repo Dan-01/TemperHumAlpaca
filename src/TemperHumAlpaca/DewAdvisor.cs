@@ -7,6 +7,10 @@ internal sealed record DewAdvice(
     double? DewMarginTrendCPerHour,
     string Note);
 
+internal sealed record DewHistoryPoint(
+    DateTimeOffset At,
+    double DewMarginC);
+
 internal sealed class DewAdvisor
 {
     private const double HysteresisC = 0.2;
@@ -60,6 +64,16 @@ internal sealed class DewAdvisor
             TrendLabel(trendPerHour),
             trendPerHour,
             "Advisory starting point only; the controller has no objective-temperature feedback.");
+    }
+
+    public IReadOnlyList<DewHistoryPoint> GetHistory()
+    {
+        lock (_gate)
+        {
+            return _history
+                .Select(sample => new DewHistoryPoint(sample.At, sample.MarginC))
+                .ToList();
+        }
     }
 
     private void RecordCurrent(SensorService sensor)
