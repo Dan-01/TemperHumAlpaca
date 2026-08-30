@@ -231,6 +231,15 @@ internal sealed class TemperHumApp
             config.DeviceProfile = DeviceProfiles.Auto;
         }
 
+        if (!config.ForecastCoordinateFormat.Equals("dms", StringComparison.OrdinalIgnoreCase))
+        {
+            config.ForecastCoordinateFormat = "dd";
+        }
+        else
+        {
+            config.ForecastCoordinateFormat = "dms";
+        }
+
         if (string.IsNullOrWhiteSpace(config.UniqueId))
         {
             config.UniqueId = Guid.NewGuid().ToString("D");
@@ -308,6 +317,7 @@ internal sealed class AppConfig
     public bool ForecastEnabled { get; set; }
     public double? ForecastLatitude { get; set; }
     public double? ForecastLongitude { get; set; }
+    public string ForecastCoordinateFormat { get; set; } = "dd";
     public int ForecastHours { get; set; } = 12;
     public int ForecastRefreshMinutes { get; set; } = 30;
     public double ForecastSafetyMarginC { get; set; } = 0.5;
