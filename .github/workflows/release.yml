@@ -54,6 +54,8 @@ jobs:
           $configPath = Join-Path $PWD 'publish/win-x64/temperhum.json'
           $config = Get-Content $configPath -Raw | ConvertFrom-Json
           if ($config.deviceProfile -ne 'auto') { throw 'Release configuration must default deviceProfile to auto.' }
+          if ($config.forecastEnabled -ne $false) { throw 'Release configuration must default forecastEnabled to false.' }
+          if ($config.forecastHours -ne 12) { throw 'Release forecast horizon must default to 12 hours.' }
           $config.autoConnect = $false
           $config | ConvertTo-Json | Set-Content $configPath
 
@@ -73,6 +75,8 @@ jobs:
                 $driverVersion = Invoke-RestMethod 'http://127.0.0.1:11111/api/v1/observingconditions/0/driverversion' -TimeoutSec 2
                 $dashboard = Invoke-WebRequest 'http://127.0.0.1:11112/dashboard' -UseBasicParsing -TimeoutSec 2
                 $status = Invoke-RestMethod 'http://127.0.0.1:11112/api/v1/status' -TimeoutSec 2
+                $history = Invoke-RestMethod 'http://127.0.0.1:11112/api/v1/history' -TimeoutSec 2
+                $forecast = Invoke-RestMethod 'http://127.0.0.1:11112/api/v1/forecast' -TimeoutSec 2
                 $ready = $true
                 break
               } catch {
@@ -85,6 +89,10 @@ jobs:
             if ($driverVersion.Value -ne '${{ steps.version.outputs.version }}') { throw 'DriverVersion does not match project version.' }
             if ($dashboard.StatusCode -ne 200) { throw 'Dashboard did not return HTTP 200.' }
             if ($dashboard.Content -notmatch 'AstroZap estimate') { throw 'Dashboard is missing AstroZap guidance.' }
+            if ($dashboard.Content -notmatch 'Dew margin history') { throw 'Dashboard is missing dew history.' }
+            if ($dashboard.Content -notmatch 'Overnight set-and-leave outlook') { throw 'Dashboard is missing overnight forecast outlook.' }
+            if ($history.windowMinutes -ne 120) { throw 'History API window was unexpected.' }
+            if ($forecast.enabled -ne $false) { throw 'Forecast API should be disabled in the release sample configuration.' }
             if ($status.version -ne '${{ steps.version.outputs.version }}') { throw 'Local status API version does not match project version.' }
           }
           finally {
