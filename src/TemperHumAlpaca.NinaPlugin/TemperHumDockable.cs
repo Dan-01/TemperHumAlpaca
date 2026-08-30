@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.Input;
 using NINA.Core.Utility.Notification;
+using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Plugin.Interfaces;
 using NINA.Profile;
 using NINA.Profile.Interfaces;
