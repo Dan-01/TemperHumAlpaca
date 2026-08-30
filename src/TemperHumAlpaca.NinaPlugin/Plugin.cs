@@ -1,3 +1,4 @@
+using CommunityToolkit.Mvvm.Input;
 using NINA.Plugin;
 using NINA.Plugin.Interfaces;
 using NINA.Profile;
@@ -6,8 +7,11 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.Composition;
+using System.Security.Cryptography;
+using System.Text;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
+using System.Windows.Input;
 
 namespace TemperHumAlpaca.NinaPlugin;
 
@@ -19,7 +23,11 @@ internal static class PluginIds
 [Export(typeof(IPluginManifest))]
 public sealed class TemperHumPlugin : PluginBase, INotifyPropertyChanged
 {
+    internal const string TelegramTokenSettingKey = "TelegramBotTokenProtected";
+    private static readonly byte[] TelegramTokenEntropy = Encoding.UTF8.GetBytes("TemperHumAlpaca.NinaPlugin.Telegram.v1");
+
     private readonly IProfileService _profileService;
+    private string _telegramTestStatus = string.Empty;
 
     [ImportingConstructor]
     public TemperHumPlugin(IProfileService profileService)
@@ -27,6 +35,9 @@ public sealed class TemperHumPlugin : PluginBase, INotifyPropertyChanged
         _profileService = profileService;
         PluginSettings = new PluginOptionsAccessor(profileService, PluginIds.Identifier);
         _profileService.ProfileChanged += ProfileService_ProfileChanged;
+
+        TestTelegramCommand = new AsyncRelayCommand(TestTelegramAsync);
+        ClearTelegramBotTokenCommand = new RelayCommand(ClearTelegramBotToken);
     }
 
     public IPluginOptionsAccessor PluginSettings { get; }
@@ -122,6 +133,121 @@ public sealed class TemperHumPlugin : PluginBase, INotifyPropertyChanged
         {
             PluginSettings.SetValueInt32(nameof(AlertCooldownMinutes), Math.Clamp(value, 1, 180));
             RaisePropertyChanged();
+        }
+    }
+
+    public bool TelegramEnabled
+    {
+        get => PluginSettings.GetValueBoolean(nameof(TelegramEnabled), false);
+        set
+        {
+            PluginSettings.SetValueBoolean(nameof(TelegramEnabled), value);
+            RaisePropertyChanged();
+        }
+    }
+
+    public string TelegramChatId
+    {
+        get => PluginSettings.GetValueString(nameof(TelegramChatId), string.Empty).Trim();
+        set
+        {
+            PluginSettings.SetValueString(nameof(TelegramChatId), (value ?? string.Empty).Trim());
+            RaisePropertyChanged();
+        }
+    }
+
+    public bool TelegramBotTokenConfigured =>
+        !string.IsNullOrWhiteSpace(PluginSettings.GetValueString(TelegramTokenSettingKey, string.Empty));
+
+    public string TelegramTokenStatus => TelegramBotTokenConfigured
+        ? "Bot token configured · encrypted for this Windows user"
+        : "Bot token not configured";
+
+    public string TelegramTestStatus
+    {
+        get => _telegramTestStatus;
+        private set
+        {
+            _telegramTestStatus = value;
+            RaisePropertyChanged();
+        }
+    }
+
+    public ICommand TestTelegramCommand { get; }
+    public ICommand ClearTelegramBotTokenCommand { get; }
+
+    public void SetTelegramBotToken(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return;
+        }
+
+        var plainBytes = Encoding.UTF8.GetBytes(token.Trim());
+        var protectedBytes = ProtectedData.Protect(plainBytes, TelegramTokenEntropy, DataProtectionScope.CurrentUser);
+        PluginSettings.SetValueString(TelegramTokenSettingKey, Convert.ToBase64String(protectedBytes));
+        TelegramTestStatus = string.Empty;
+        RaisePropertyChanged(nameof(TelegramBotTokenConfigured));
+        RaisePropertyChanged(nameof(TelegramTokenStatus));
+    }
+
+    public void ClearTelegramBotToken()
+    {
+        PluginSettings.SetValueString(TelegramTokenSettingKey, string.Empty);
+        TelegramTestStatus = "Stored bot token cleared.";
+        RaisePropertyChanged(nameof(TelegramBotTokenConfigured));
+        RaisePropertyChanged(nameof(TelegramTokenStatus));
+    }
+
+    internal static string ReadTelegramBotToken(IPluginOptionsAccessor settings)
+    {
+        var protectedValue = settings.GetValueString(TelegramTokenSettingKey, string.Empty);
+        if (string.IsNullOrWhiteSpace(protectedValue))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var protectedBytes = Convert.FromBase64String(protectedValue);
+            var plainBytes = ProtectedData.Unprotect(protectedBytes, TelegramTokenEntropy, DataProtectionScope.CurrentUser);
+            return Encoding.UTF8.GetString(plainBytes);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private async Task TestTelegramAsync()
+    {
+        var token = ReadTelegramBotToken(PluginSettings);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            TelegramTestStatus = "Bot token is not configured.";
+            return;
+        }
+
+        var chatId = TelegramChatId;
+        if (string.IsNullOrWhiteSpace(chatId))
+        {
+            TelegramTestStatus = "Chat ID is not configured.";
+            return;
+        }
+
+        TelegramTestStatus = "Sending test…";
+        try
+        {
+            await TelegramNotifier.SendAsync(
+                token,
+                chatId,
+                $"🔭 TemperHumAlpaca v0.6 Telegram test\nN.I.N.A. remote dew alerts are configured on {Environment.MachineName}.",
+                default);
+            TelegramTestStatus = $"Test message sent at {DateTime.Now:HH:mm:ss}.";
+        }
+        catch (Exception ex)
+        {
+            TelegramTestStatus = $"Telegram test failed: {ex.Message}";
         }
     }
 
