@@ -63,6 +63,7 @@ jobs:
                 $management = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/configureddevices' -TimeoutSec 2
                 $dashboard = Invoke-WebRequest 'http://127.0.0.1:11112/dashboard' -UseBasicParsing -TimeoutSec 2
                 $status = Invoke-RestMethod 'http://127.0.0.1:11112/api/v1/status' -TimeoutSec 2
+                $history = Invoke-RestMethod 'http://127.0.0.1:11112/api/v1/history' -TimeoutSec 2
                 $ready = $true
                 break
               } catch {
@@ -75,9 +76,14 @@ jobs:
             if ($dashboard.StatusCode -ne 200) { throw 'Dashboard did not return HTTP 200.' }
             if ($dashboard.Content -notmatch 'Dew margin') { throw 'Dashboard is missing dew margin display.' }
             if ($dashboard.Content -notmatch 'AstroZap estimate') { throw 'Dashboard is missing AstroZap guidance.' }
+            if ($dashboard.Content -notmatch 'Dew margin history') { throw 'Dashboard is missing dew margin history.' }
+            if ($dashboard.Content -notmatch '/api/v1/history') { throw 'Dashboard is missing the history API reference.' }
             if ($dashboard.Content -notmatch 'Calibrate against reference thermometer') { throw 'Dashboard is missing calibration controls.' }
             if ($status.version -ne '0.5.0') { throw 'Local status API version did not match 0.5.0.' }
             if ($status.connected -ne $false) { throw 'Disconnected status API response was unexpected.' }
+            if ($history.version -ne '0.5.0') { throw 'History API version did not match 0.5.0.' }
+            if ($history.windowMinutes -ne 120) { throw 'History API did not report the two-hour window.' }
+            if ($null -eq $history.samples) { throw 'History API did not include a samples collection.' }
 
             $description = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/description'
             if ($description.Value.ManufacturerVersion -ne '0.5.0') { throw 'Management version did not match 0.5.0.' }
