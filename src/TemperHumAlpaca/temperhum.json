@@ -9,5 +9,12 @@
   "discoveryPort": 32227,
   "autoConnect": true,
   "deviceProfile": "auto",
+  "forecastEnabled": false,
+  "forecastLatitude": null,
+  "forecastLongitude": null,
+  "forecastHours": 12,
+  "forecastRefreshMinutes": 30,
+  "forecastSafetyMarginC": 0.5,
+  "forecastUseEnsemble": true,
   "uniqueId": ""
 }
