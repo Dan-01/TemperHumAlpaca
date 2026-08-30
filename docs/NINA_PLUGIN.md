@@ -58,6 +58,25 @@ Defaults:
 
 The plugin establishes an initial baseline silently, so opening N.I.N.A. while conditions are already poor does not immediately generate a burst of startup warnings.
 
+### Telegram remote delivery
+
+v0.6 can optionally deliver the same transition-based alerts directly through a Telegram bot. This is independent of Ground Station, so no sequencer failure is manufactured merely to trigger a remote notification.
+
+You may use the same Telegram bot token and chat ID already configured for Ground Station. The plugin sends plain text through Telegram's HTTPS Bot API `sendMessage` method.
+
+Telegram delivery is disabled by default. When enabled, each alert that passes the existing alert rule/cooldown also produces a Telegram message. The current alert types are:
+
+- dew-risk escalation to the configured threshold or worse
+- overnight set-and-leave AstroZap recommendation increase
+- TEMPerHUM sensor disconnect
+- TemperHumAlpaca service loss after previously being reachable
+
+The Telegram bot token is treated as a secret. It is entered through a password-style field and stored encrypted with Windows DPAPI using `CurrentUser`, so the plaintext token is not written into the plugin settings. The token is not echoed back into the settings UI after entry. The chat ID is stored as a normal plugin setting.
+
+The settings page provides **Test Telegram** to send a harmless test message using the same delivery code as live alerts, plus **Clear stored bot token**.
+
+Do not commit or paste a real bot token into repository files, issue reports, logs, screenshots, or chat transcripts.
+
 ## Install a development build
 
 1. Keep the released TemperHumAlpaca service installed and running normally.
@@ -94,6 +113,11 @@ The plugin settings page exposes:
 - sensor-disconnect alert enable/disable
 - service-loss alert enable/disable
 - repeat-alert cooldown
+- Telegram delivery enable/disable
+- Telegram chat ID
+- encrypted Telegram bot-token entry/status
+- **Test Telegram**
+- **Clear stored bot token**
 
 For the normal single-PC Astrobox setup, leave the service URL at its loopback default.
 
@@ -109,6 +133,8 @@ Before changing any alert settings, verify that:
 6. **Open dashboard** opens the local dashboard;
 7. stopping the TemperHumAlpaca service changes the panel to `service unavailable`, then recovery occurs after restarting the service.
 
+For Telegram, copy your bot token and chat ID from your existing Ground Station configuration into TemperHumAlpaca's N.I.N.A. plugin settings, enable Telegram delivery, and click **Test Telegram**. A successful test confirms the bot credentials, target chat and outbound HTTPS access from the imaging PC without needing to manufacture a dew-risk event.
+
 Do not deliberately manipulate real dew/heater conditions merely to test alert thresholds. Alert transition testing can be added to automated/plugin integration tests separately.
 
 ## Development build
@@ -120,7 +146,7 @@ dotnet restore src/TemperHumAlpaca.NinaPlugin/TemperHumAlpaca.NinaPlugin.csproj
 dotnet build src/TemperHumAlpaca.NinaPlugin/TemperHumAlpaca.NinaPlugin.csproj -c Release
 ```
 
-The dedicated `nina-plugin` GitHub Actions workflow builds against the stable N.I.N.A. 3.2 plugin package, validates assembly version `0.6.0.0`, and uploads a manual-test artifact.
+The dedicated `nina-plugin` GitHub Actions workflow builds against the stable N.I.N.A. 3.2 plugin package, validates assembly version `0.6.0.0`, and uploads a manual-test artifact. CI does not send Telegram messages and contains no real Telegram credentials.
 
 ## Release plan
 
