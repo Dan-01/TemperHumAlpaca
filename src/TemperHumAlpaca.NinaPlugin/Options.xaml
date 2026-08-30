@@ -22,6 +22,7 @@
             </Grid>
 
             <Separator Margin="0,4,0,12" />
+            <TextBlock Margin="0,0,0,8" FontSize="16" FontWeight="SemiBold" Text="Alert rules" />
             <CheckBox Margin="0,0,0,10" Content="Enable N.I.N.A. dew alerts" IsChecked="{Binding AlertsEnabled}" />
 
             <Grid Margin="0,0,0,10">
@@ -45,6 +46,40 @@
                 <TextBlock VerticalAlignment="Center" Text="Repeat-alert cooldown (minutes)" />
                 <TextBox Grid.Column="1" Text="{Binding AlertCooldownMinutes, UpdateSourceTrigger=LostFocus}" />
             </Grid>
+
+            <Separator Margin="0,16,0,12" />
+            <TextBlock Margin="0,0,0,4" FontSize="16" FontWeight="SemiBold" Text="Telegram remote alerts" />
+            <TextBlock Margin="0,0,0,10" TextWrapping="Wrap"
+                       Text="Send the same transition-based dew/heater/service alerts directly through your Telegram bot. You can use the same bot token and chat ID as Ground Station; Ground Station itself is not required for these messages." />
+
+            <CheckBox Margin="0,0,0,12" Content="Enable Telegram delivery" IsChecked="{Binding TelegramEnabled}" />
+
+            <Grid Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="300" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center" Text="Telegram chat ID" />
+                <TextBox Grid.Column="1" Text="{Binding TelegramChatId, UpdateSourceTrigger=LostFocus}" />
+            </Grid>
+
+            <Grid Margin="0,0,0,6">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="300" />
+                </Grid.ColumnDefinitions>
+                <TextBlock VerticalAlignment="Center" Text="Telegram bot token" />
+                <PasswordBox Grid.Column="1" LostKeyboardFocus="TelegramBotToken_LostKeyboardFocus" />
+            </Grid>
+
+            <TextBlock Margin="220,0,0,10" Text="{Binding TelegramTokenStatus}" TextWrapping="Wrap" />
+
+            <StackPanel Margin="220,0,0,8" Orientation="Horizontal">
+                <Button MinWidth="120" Margin="0,0,8,0" Content="Test Telegram" Command="{Binding TestTelegramCommand}" />
+                <Button MinWidth="150" Content="Clear stored bot token" Command="{Binding ClearTelegramBotTokenCommand}" />
+            </StackPanel>
+
+            <TextBlock Margin="220,0,0,0" Text="{Binding TelegramTestStatus}" TextWrapping="Wrap" />
         </StackPanel>
     </DataTemplate>
 </ResourceDictionary>
