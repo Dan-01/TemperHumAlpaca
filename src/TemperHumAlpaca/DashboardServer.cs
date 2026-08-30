@@ -134,8 +134,7 @@ internal static class DashboardServer
                 var form = await request.ReadFormAsync(cancellationToken);
                 var enabled = form.ContainsKey("forecastEnabled");
                 var useEnsemble = form.ContainsKey("forecastUseEnsemble");
-                var latitude = CoordinateParser.ParseNullable(form["forecastLatitude"], CoordinateAxis.Latitude);
-                var longitude = CoordinateParser.ParseNullable(form["forecastLongitude"], CoordinateAxis.Longitude);
+                var (latitude, longitude) = ParseForecastCoordinates(form);
                 var hours = ParseInt(form["forecastHours"], "Forecast horizon");
                 var refreshMinutes = ParseInt(form["forecastRefreshMinutes"], "Forecast refresh interval");
                 var safetyMargin = ParseDouble(form["forecastSafetyMarginC"], "Forecast safety margin");
@@ -330,12 +329,79 @@ internal static class DashboardServer
             return null;
         }
 
-        if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+        if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || !double.IsFinite(value))
         {
-            throw new InvalidOperationException("Latitude and longitude must use decimal degrees with a decimal point.");
+            throw new InvalidOperationException("DD latitude and longitude must use decimal degrees with a decimal point.");
         }
 
         return value;
+    }
+
+    private static (double? Latitude, double? Longitude) ParseForecastCoordinates(IFormCollection form)
+    {
+        var latitudeDecimalRaw = form["forecastLatitudeDecimal"].ToString();
+        var longitudeDecimalRaw = form["forecastLongitudeDecimal"].ToString();
+        var decimalAny = !string.IsNullOrWhiteSpace(latitudeDecimalRaw) ||
+                         !string.IsNullOrWhiteSpace(longitudeDecimalRaw);
+
+        var latitudeDegrees = form["forecastLatitudeDegrees"].ToString();
+        var latitudeMinutes = form["forecastLatitudeMinutes"].ToString();
+        var latitudeSeconds = form["forecastLatitudeSeconds"].ToString();
+        var latitudeHemisphere = form["forecastLatitudeHemisphere"].ToString();
+        var longitudeDegrees = form["forecastLongitudeDegrees"].ToString();
+        var longitudeMinutes = form["forecastLongitudeMinutes"].ToString();
+        var longitudeSeconds = form["forecastLongitudeSeconds"].ToString();
+        var longitudeHemisphere = form["forecastLongitudeHemisphere"].ToString();
+
+        var dmsValues = new[]
+        {
+            latitudeDegrees,
+            latitudeMinutes,
+            latitudeSeconds,
+            latitudeHemisphere,
+            longitudeDegrees,
+            longitudeMinutes,
+            longitudeSeconds,
+            longitudeHemisphere
+        };
+        var dmsAny = dmsValues.Any(value => !string.IsNullOrWhiteSpace(value));
+
+        if (decimalAny && dmsAny)
+        {
+            throw new InvalidOperationException("Enter the observing location using either DD or DMS, not both.");
+        }
+
+        if (decimalAny)
+        {
+            if (string.IsNullOrWhiteSpace(latitudeDecimalRaw) || string.IsNullOrWhiteSpace(longitudeDecimalRaw))
+            {
+                throw new InvalidOperationException("DD requires both latitude and longitude.");
+            }
+
+            return (
+                ParseNullableDouble(latitudeDecimalRaw),
+                ParseNullableDouble(longitudeDecimalRaw));
+        }
+
+        if (!dmsAny)
+        {
+            return (null, null);
+        }
+
+        if (dmsValues.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new InvalidOperationException(
+                "DMS requires latitude and longitude degrees, minutes, seconds, and hemisphere selections.");
+        }
+
+        var latitude = CoordinateParser.Parse(
+            $"{latitudeDegrees} {latitudeMinutes} {latitudeSeconds} {latitudeHemisphere}",
+            CoordinateAxis.Latitude);
+        var longitude = CoordinateParser.Parse(
+            $"{longitudeDegrees} {longitudeMinutes} {longitudeSeconds} {longitudeHemisphere}",
+            CoordinateAxis.Longitude);
+
+        return (latitude, longitude);
     }
 
     private static int ParseInt(string raw, string fieldName)
@@ -538,8 +604,8 @@ internal static class DashboardServer
             ? string.Empty
             : $"<div class=\"notice\">{WebUtility.HtmlEncode(message)}</div>";
 
-        var forecastLatitude = config.ForecastLatitude?.ToString("0.######", CultureInfo.InvariantCulture) ?? string.Empty;
-        var forecastLongitude = config.ForecastLongitude?.ToString("0.######", CultureInfo.InvariantCulture) ?? string.Empty;
+        var forecastLatitudeDecimal = config.ForecastLatitude?.ToString("0.######", CultureInfo.InvariantCulture) ?? string.Empty;
+        var forecastLongitudeDecimal = config.ForecastLongitude?.ToString("0.######", CultureInfo.InvariantCulture) ?? string.Empty;
         var forecastEnabledChecked = config.ForecastEnabled ? "checked" : string.Empty;
         var forecastEnsembleChecked = config.ForecastUseEnsemble ? "checked" : string.Empty;
 
@@ -554,12 +620,13 @@ internal static class DashboardServer
           <style>
             :root{color-scheme:light dark;--border:#8a8a8a55;--panel:#8881;--good:#2e9b55;--warn:#d18a00}
             body{font-family:Segoe UI,Arial,sans-serif;max-width:1060px;margin:32px auto;padding:0 20px;line-height:1.45}
-            h1{margin-bottom:4px}h2{margin-top:0}.sub{opacity:.7;margin-top:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:22px 0}
+            h1{margin-bottom:4px}h2{margin-top:0}h3{margin:18px 0 8px}.sub{opacity:.7;margin-top:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:22px 0}
             .card,.panel{border:1px solid var(--border);border-radius:12px;background:var(--panel);padding:16px}.label{font-size:.86rem;opacity:.7}.value{font-size:1.8rem;font-weight:650;margin-top:4px}.detail{font-size:.85rem;opacity:.75;margin-top:4px}
             .panel{margin:14px 0}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}label{display:block;font-size:.88rem;margin-bottom:4px}
-            input{box-sizing:border-box;width:100%;padding:9px;border:1px solid var(--border);border-radius:7px}input[type=checkbox]{width:auto;margin-right:7px}button{padding:9px 14px;border-radius:7px;border:1px solid var(--border);cursor:pointer;margin-top:10px}
+            input,select{box-sizing:border-box;width:100%;padding:9px;border:1px solid var(--border);border-radius:7px}input[type=checkbox]{width:auto;margin-right:7px}button{padding:9px 14px;border-radius:7px;border:1px solid var(--border);cursor:pointer;margin-top:10px}
             code{background:#8882;padding:2px 5px;border-radius:4px}.notice{border-left:4px solid var(--good);padding:10px 12px;background:#2e9b5518;margin:16px 0;border-radius:6px}
             .small{font-size:.88rem;opacity:.75}.status{font-weight:650}.advisory{border-left:4px solid var(--warn)}.forecast{border-left:4px solid var(--good)}
+            .coordinate-section{border-top:1px solid var(--border);margin-top:14px;padding-top:2px}.coordinate-line{display:grid;grid-template-columns:90px 80px repeat(3,minmax(90px,1fr));gap:10px;align-items:end;margin:10px 0}.coordinate-name{font-weight:600;padding-bottom:10px}.coordinate-part{display:grid;grid-template-columns:1fr auto;gap:5px;align-items:center}.coordinate-symbol{font-size:1.1rem;opacity:.75}.coordinate-line label{font-size:.76rem;opacity:.7}@media(max-width:760px){.coordinate-line{grid-template-columns:1fr 1fr}.coordinate-name{grid-column:1/-1;padding-bottom:0}}
             .history-chart{width:100%;height:auto;min-height:180px;display:block;margin-top:8px}.history-grid{stroke:currentColor;stroke-opacity:.15;stroke-width:1}.history-line{fill:none;stroke:currentColor;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}.history-dot{fill:currentColor}.history-label{fill:currentColor;opacity:.62;font-size:12px}.history-empty{padding:28px 8px;text-align:center;opacity:.7}
           </style>
         </head>
@@ -614,20 +681,46 @@ internal static class DashboardServer
 
           <div class="panel">
             <h2>Overnight forecast settings</h2>
-            <p class="small">Coordinates are stored only in the local <code>temperhum.json</code>. Enter decimal degrees or degrees/minutes/seconds (DMS), for example <code>51.6367</code> or <code>51°38'12&quot;N</code>. When forecasting is enabled the normalized coordinates are sent to Open-Meteo to retrieve UK Met Office forecast data.</p>
+            <p class="small">Coordinates are stored only in the local <code>temperhum.json</code>. Use either DD or DMS below, not both. Saved coordinates are normalized to decimal degrees. When forecasting is enabled they are sent to Open-Meteo to retrieve UK Met Office forecast data.</p>
             <form method="post" action="/forecast-settings">
               <label><input name="forecastEnabled" type="checkbox" {{forecastEnabledChecked}}>Enable overnight forecast</label>
               <label><input name="forecastUseEnsemble" type="checkbox" {{forecastEnsembleChecked}}>Use conservative UKMO 2 km ensemble P10 when available</label>
+
+              <div class="coordinate-section">
+                <h3>DD (decimal degrees)*</h3>
+                <div class="row">
+                  <div><label for="forecastLatitudeDecimal">Latitude</label><input id="forecastLatitudeDecimal" name="forecastLatitudeDecimal" type="number" step="0.000001" min="-90" max="90" value="{{forecastLatitudeDecimal}}"></div>
+                  <div><label for="forecastLongitudeDecimal">Longitude</label><input id="forecastLongitudeDecimal" name="forecastLongitudeDecimal" type="number" step="0.000001" min="-180" max="180" value="{{forecastLongitudeDecimal}}"></div>
+                </div>
+              </div>
+
+              <div class="coordinate-section">
+                <h3>DMS (degrees, minutes, seconds)*</h3>
+                <div class="coordinate-line">
+                  <div class="coordinate-name">Latitude</div>
+                  <div><label for="forecastLatitudeHemisphere">N / S</label><select id="forecastLatitudeHemisphere" name="forecastLatitudeHemisphere"><option value=""></option><option value="N">N</option><option value="S">S</option></select></div>
+                  <div><label for="forecastLatitudeDegrees">Degrees</label><div class="coordinate-part"><input id="forecastLatitudeDegrees" name="forecastLatitudeDegrees" type="number" min="0" max="90" step="1"><span class="coordinate-symbol">°</span></div></div>
+                  <div><label for="forecastLatitudeMinutes">Minutes</label><div class="coordinate-part"><input id="forecastLatitudeMinutes" name="forecastLatitudeMinutes" type="number" min="0" max="59" step="1"><span class="coordinate-symbol">′</span></div></div>
+                  <div><label for="forecastLatitudeSeconds">Seconds</label><div class="coordinate-part"><input id="forecastLatitudeSeconds" name="forecastLatitudeSeconds" type="number" min="0" max="59.999" step="0.001"><span class="coordinate-symbol">″</span></div></div>
+                </div>
+                <div class="coordinate-line">
+                  <div class="coordinate-name">Longitude</div>
+                  <div><label for="forecastLongitudeHemisphere">E / W</label><select id="forecastLongitudeHemisphere" name="forecastLongitudeHemisphere"><option value=""></option><option value="E">E</option><option value="W">W</option></select></div>
+                  <div><label for="forecastLongitudeDegrees">Degrees</label><div class="coordinate-part"><input id="forecastLongitudeDegrees" name="forecastLongitudeDegrees" type="number" min="0" max="180" step="1"><span class="coordinate-symbol">°</span></div></div>
+                  <div><label for="forecastLongitudeMinutes">Minutes</label><div class="coordinate-part"><input id="forecastLongitudeMinutes" name="forecastLongitudeMinutes" type="number" min="0" max="59" step="1"><span class="coordinate-symbol">′</span></div></div>
+                  <div><label for="forecastLongitudeSeconds">Seconds</label><div class="coordinate-part"><input id="forecastLongitudeSeconds" name="forecastLongitudeSeconds" type="number" min="0" max="59.999" step="0.001"><span class="coordinate-symbol">″</span></div></div>
+                </div>
+              </div>
+
+              <p class="small">* Complete one coordinate format only. Both latitude and longitude are required when forecasting is enabled.</p>
               <div class="row">
-                <div><label for="forecastLatitude">Latitude</label><input id="forecastLatitude" name="forecastLatitude" type="text" value="{{forecastLatitude}}" placeholder="51.6367 or 51°38'12&quot;N"></div>
-                <div><label for="forecastLongitude">Longitude</label><input id="forecastLongitude" name="forecastLongitude" type="text" value="{{forecastLongitude}}" placeholder="-0.3625 or 0°21'45&quot;W"></div>
                 <div><label for="forecastHours">Horizon (hours)</label><input id="forecastHours" name="forecastHours" type="number" min="6" max="24" step="1" value="{{config.ForecastHours}}" required></div>
                 <div><label for="forecastRefreshMinutes">Refresh (minutes)</label><input id="forecastRefreshMinutes" name="forecastRefreshMinutes" type="number" min="5" max="180" step="1" value="{{config.ForecastRefreshMinutes}}" required></div>
                 <div><label for="forecastSafetyMarginC">Extra safety margin (°C)</label><input id="forecastSafetyMarginC" name="forecastSafetyMarginC" type="number" min="0" max="5" step="0.1" value="{{config.ForecastSafetyMarginC.ToString("0.0", CultureInfo.InvariantCulture)}}" required></div>
               </div>
               <button type="submit">Save and refresh forecast</button>
             </form>
-            <p class="small">Accepted coordinate examples: <code>51.6367</code>, <code>51.6367 N</code>, <code>51°38'12&quot;N</code>, or <code>51 38 12 N</code>. Forecast data: Open-Meteo using UK Met Office UKV/ensemble models.</p>
+            <p class="small">Forecast data: Open-Meteo using UK Met Office UKV/ensemble models.</p>
           </div>
 
           <div class="panel">
