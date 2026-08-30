@@ -5,11 +5,13 @@ on:
     branches: [develop, master]
     paths:
       - 'src/TemperHumAlpaca.NinaPlugin/**'
+      - 'docs/NINA_PLUGIN.md'
       - '.github/workflows/nina-plugin.yml'
   pull_request:
     branches: [develop, master]
     paths:
       - 'src/TemperHumAlpaca.NinaPlugin/**'
+      - 'docs/NINA_PLUGIN.md'
       - '.github/workflows/nina-plugin.yml'
   workflow_dispatch:
 
@@ -50,6 +52,7 @@ jobs:
           $stage = Join-Path $PWD 'publish/nina-plugin/TemperHumAlpaca'
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
           Copy-Item $dll $stage -Force
+          Copy-Item 'docs/NINA_PLUGIN.md' (Join-Path $stage 'README.md') -Force
 
           $pdb = [System.IO.Path]::ChangeExtension($dll, '.pdb')
           if (Test-Path $pdb) { Copy-Item $pdb $stage -Force }
