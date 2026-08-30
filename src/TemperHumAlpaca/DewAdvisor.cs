@@ -9,9 +9,11 @@ internal sealed record DewAdvice(
 
 internal sealed class DewAdvisor
 {
+    private const double HysteresisC = 0.2;
+
     private readonly object _gate = new();
     private readonly List<(DateTimeOffset At, double MarginC)> _history = [];
-    private int? _lastRecommendedPower;
+    private int? _lastBasePower;
 
     public async Task TrackAsync(SensorService sensor, CancellationToken cancellationToken)
     {
@@ -36,32 +38,19 @@ internal sealed class DewAdvisor
     {
         var margin = snapshot.TemperatureC - snapshot.DewPointC;
         double? trendPerHour;
+        int stableBasePower;
 
         lock (_gate)
         {
             AddSample(snapshot.UpdatedAt, margin);
             trendPerHour = CalculateTrendPerHour(snapshot.UpdatedAt, margin);
+            stableBasePower = StabilizeBasePower(margin, BasePowerForMargin(margin));
         }
 
         var risk = RiskForMargin(margin);
-        var basePower = BasePowerForMargin(margin);
         var trendAdjustment = TrendAdjustment(trendPerHour);
-        var target = Math.Clamp(basePower + trendAdjustment, 5, 95);
+        var target = Math.Clamp(stableBasePower + trendAdjustment, 5, 95);
         target = (int)(Math.Round(target / 5.0, MidpointRounding.AwayFromZero) * 5);
-
-        lock (_gate)
-        {
-            // A small hysteresis band prevents the recommendation bouncing between
-            // neighbouring settings when the margin is hovering around a threshold.
-            if (_lastRecommendedPower is int previous && Math.Abs(target - previous) <= 5)
-            {
-                target = previous;
-            }
-            else
-            {
-                _lastRecommendedPower = target;
-            }
-        }
 
         return new DewAdvice(
             margin,
@@ -128,6 +117,58 @@ internal sealed class DewAdvisor
         }
 
         return (currentMargin - reference.MarginC) / hours;
+    }
+
+    private int StabilizeBasePower(double margin, int candidate)
+    {
+        if (_lastBasePower is not int previous)
+        {
+            _lastBasePower = candidate;
+            return candidate;
+        }
+
+        if (candidate == previous)
+        {
+            return previous;
+        }
+
+        var boundary = BoundaryBetween(previous, candidate);
+        if (boundary is null)
+        {
+            _lastBasePower = candidate;
+            return candidate;
+        }
+
+        // Moving to a lower-power band requires clearing the threshold by +0.2 C;
+        // moving to a higher-power band requires crossing it by -0.2 C.
+        var crossed = candidate < previous
+            ? margin >= boundary.Value + HysteresisC
+            : margin <= boundary.Value - HysteresisC;
+
+        if (crossed)
+        {
+            _lastBasePower = candidate;
+            return candidate;
+        }
+
+        return previous;
+    }
+
+    private static double? BoundaryBetween(int first, int second)
+    {
+        var low = Math.Min(first, second);
+        var high = Math.Max(first, second);
+
+        return (low, high) switch
+        {
+            (5, 15) => 8.0,
+            (15, 25) => 5.0,
+            (25, 35) => 3.0,
+            (35, 50) => 2.0,
+            (50, 70) => 1.0,
+            (70, 95) => 0.0,
+            _ => null
+        };
     }
 
     private static string RiskForMargin(double margin) => margin switch
