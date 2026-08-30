@@ -94,9 +94,10 @@ jobs:
             if ($status.version -ne '0.5.0') { throw 'Local status API version did not match 0.5.0.' }
             if ($status.connected -ne $false) { throw 'Disconnected status API response was unexpected.' }
 
-            # Forecast remains disabled here, so this tests the separate DMS fields and
-            # persistence without making any external weather request during CI.
+            # Forecast remains disabled here, so this tests DMS parsing/persistence
+            # without making any external weather request during CI.
             $dmsForm = @{
+              forecastCoordinateFormat = 'dms'
               forecastLatitudeHemisphere = 'N'
               forecastLatitudeDegrees = '51'
               forecastLatitudeMinutes = '38'
@@ -114,10 +115,24 @@ jobs:
             $saved = Get-Content $configPath -Raw | ConvertFrom-Json
             if ([math]::Abs([double]$saved.forecastLatitude - 51.6366667) -gt 0.00001) { throw 'DMS latitude was not normalized correctly.' }
             if ([math]::Abs([double]$saved.forecastLongitude - (-0.3625)) -gt 0.00001) { throw 'DMS longitude was not normalized correctly.' }
+            if ($saved.forecastCoordinateFormat -ne 'dms') { throw 'DMS input mode was not persisted.' }
             if ($saved.forecastEnabled -ne $false) { throw 'DMS parsing smoke test unexpectedly enabled forecasting.' }
 
-            # Verify the separate DD fields also normalize and save correctly.
+            $dmsDashboard = Invoke-WebRequest 'http://127.0.0.1:11112/dashboard' -UseBasicParsing -TimeoutSec 5
+            if ($dmsDashboard.Content -notmatch 'id="forecastLongitudeDecimal"[^>]*value="-0\.3625"') { throw 'DMS save did not populate DD longitude.' }
+            if ($dmsDashboard.Content -notmatch 'id="forecastLatitudeDecimal"[^>]*value="51\.636667"') { throw 'DMS save did not populate DD latitude.' }
+            if ($dmsDashboard.Content -notmatch 'id="forecastLongitudeDegrees"[^>]*value="0"') { throw 'DMS longitude degrees did not persist in dashboard.' }
+            if ($dmsDashboard.Content -notmatch 'id="forecastLongitudeMinutes"[^>]*value="21"') { throw 'DMS longitude minutes did not persist in dashboard.' }
+            if ($dmsDashboard.Content -notmatch 'id="forecastLongitudeSeconds"[^>]*value="45"') { throw 'DMS longitude seconds did not persist in dashboard.' }
+            if ($dmsDashboard.Content -notmatch 'option value="W" selected') { throw 'DMS west hemisphere did not persist in dashboard.' }
+            if ($dmsDashboard.Content -notmatch 'id="forecastLatitudeDegrees"[^>]*value="51"') { throw 'DMS latitude degrees did not persist in dashboard.' }
+            if ($dmsDashboard.Content -notmatch 'id="forecastLatitudeMinutes"[^>]*value="38"') { throw 'DMS latitude minutes did not persist in dashboard.' }
+            if ($dmsDashboard.Content -notmatch 'id="forecastLatitudeSeconds"[^>]*value="12"') { throw 'DMS latitude seconds did not persist in dashboard.' }
+            if ($dmsDashboard.Content -notmatch 'option value="N" selected') { throw 'DMS north hemisphere did not persist in dashboard.' }
+
+            # Verify DD input also saves correctly and regenerates DMS.
             $ddForm = @{
+              forecastCoordinateFormat = 'dd'
               forecastLatitudeDecimal = '52.125'
               forecastLongitudeDecimal = '-1.75'
               forecastHours = '12'
@@ -129,6 +144,19 @@ jobs:
             $saved = Get-Content $configPath -Raw | ConvertFrom-Json
             if ([math]::Abs([double]$saved.forecastLatitude - 52.125) -gt 0.000001) { throw 'DD latitude was not saved correctly.' }
             if ([math]::Abs([double]$saved.forecastLongitude - (-1.75)) -gt 0.000001) { throw 'DD longitude was not saved correctly.' }
+            if ($saved.forecastCoordinateFormat -ne 'dd') { throw 'DD input mode was not persisted.' }
+
+            $ddDashboard = Invoke-WebRequest 'http://127.0.0.1:11112/dashboard' -UseBasicParsing -TimeoutSec 5
+            if ($ddDashboard.Content -notmatch 'id="forecastLongitudeDecimal"[^>]*value="-1\.75"') { throw 'DD longitude did not persist in dashboard.' }
+            if ($ddDashboard.Content -notmatch 'id="forecastLatitudeDecimal"[^>]*value="52\.125"') { throw 'DD latitude did not persist in dashboard.' }
+            if ($ddDashboard.Content -notmatch 'id="forecastLongitudeDegrees"[^>]*value="1"') { throw 'DD save did not regenerate DMS longitude degrees.' }
+            if ($ddDashboard.Content -notmatch 'id="forecastLongitudeMinutes"[^>]*value="45"') { throw 'DD save did not regenerate DMS longitude minutes.' }
+            if ($ddDashboard.Content -notmatch 'id="forecastLongitudeSeconds"[^>]*value="0"') { throw 'DD save did not regenerate DMS longitude seconds.' }
+            if ($ddDashboard.Content -notmatch 'option value="W" selected') { throw 'DD save did not regenerate west hemisphere.' }
+            if ($ddDashboard.Content -notmatch 'id="forecastLatitudeDegrees"[^>]*value="52"') { throw 'DD save did not regenerate DMS latitude degrees.' }
+            if ($ddDashboard.Content -notmatch 'id="forecastLatitudeMinutes"[^>]*value="7"') { throw 'DD save did not regenerate DMS latitude minutes.' }
+            if ($ddDashboard.Content -notmatch 'id="forecastLatitudeSeconds"[^>]*value="30"') { throw 'DD save did not regenerate DMS latitude seconds.' }
+            if ($ddDashboard.Content -notmatch 'option value="N" selected') { throw 'DD save did not regenerate north hemisphere.' }
 
             $description = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/description'
             if ($description.Value.ManufacturerVersion -ne '0.5.0') { throw 'Management version did not match 0.5.0.' }
