@@ -134,7 +134,7 @@ internal static class DashboardServer
                 var form = await request.ReadFormAsync(cancellationToken);
                 var enabled = form.ContainsKey("forecastEnabled");
                 var useEnsemble = form.ContainsKey("forecastUseEnsemble");
-                var (latitude, longitude) = ParseForecastCoordinates(form);
+                var (latitude, longitude, coordinateFormat) = ParseForecastCoordinates(form);
                 var hours = ParseInt(form["forecastHours"], "Forecast horizon");
                 var refreshMinutes = ParseInt(form["forecastRefreshMinutes"], "Forecast refresh interval");
                 var safetyMargin = ParseDouble(form["forecastSafetyMarginC"], "Forecast safety margin");
@@ -172,6 +172,7 @@ internal static class DashboardServer
                 config.ForecastEnabled = enabled;
                 config.ForecastLatitude = latitude;
                 config.ForecastLongitude = longitude;
+                config.ForecastCoordinateFormat = coordinateFormat;
                 config.ForecastHours = hours;
                 config.ForecastRefreshMinutes = refreshMinutes;
                 config.ForecastSafetyMarginC = safetyMargin;
@@ -337,7 +338,7 @@ internal static class DashboardServer
         return value;
     }
 
-    private static (double? Latitude, double? Longitude) ParseForecastCoordinates(IFormCollection form)
+    private static (double? Latitude, double? Longitude, string Format) ParseForecastCoordinates(IFormCollection form)
     {
         var latitudeDecimalRaw = form["forecastLatitudeDecimal"].ToString();
         var longitudeDecimalRaw = form["forecastLongitudeDecimal"].ToString();
@@ -366,13 +367,24 @@ internal static class DashboardServer
         };
         var dmsAny = dmsValues.Any(value => !string.IsNullOrWhiteSpace(value));
 
-        if (decimalAny && dmsAny)
+        var requestedFormat = form["forecastCoordinateFormat"].ToString().Trim().ToLowerInvariant();
+        var format = requestedFormat switch
         {
-            throw new InvalidOperationException("Enter the observing location using either DD or DMS, not both.");
-        }
+            "dd" => "dd",
+            "dms" => "dms",
+            _ when dmsAny && !decimalAny => "dms",
+            _ when decimalAny && !dmsAny => "dd",
+            _ when !decimalAny && !dmsAny => "dd",
+            _ => throw new InvalidOperationException("Choose which coordinate format to save by editing either the DD or DMS fields.")
+        };
 
-        if (decimalAny)
+        if (format == "dd")
         {
+            if (!decimalAny)
+            {
+                return (null, null, "dd");
+            }
+
             if (string.IsNullOrWhiteSpace(latitudeDecimalRaw) || string.IsNullOrWhiteSpace(longitudeDecimalRaw))
             {
                 throw new InvalidOperationException("DD requires both latitude and longitude.");
@@ -380,12 +392,13 @@ internal static class DashboardServer
 
             return (
                 ParseNullableDouble(latitudeDecimalRaw),
-                ParseNullableDouble(longitudeDecimalRaw));
+                ParseNullableDouble(longitudeDecimalRaw),
+                "dd");
         }
 
         if (!dmsAny)
         {
-            return (null, null);
+            return (null, null, "dms");
         }
 
         if (dmsValues.Any(string.IsNullOrWhiteSpace))
@@ -401,8 +414,46 @@ internal static class DashboardServer
             $"{longitudeDegrees} {longitudeMinutes} {longitudeSeconds} {longitudeHemisphere}",
             CoordinateAxis.Longitude);
 
-        return (latitude, longitude);
+        return (latitude, longitude, "dms");
     }
+
+    private static DmsCoordinate ToDms(double? value, CoordinateAxis axis)
+    {
+        if (value is null)
+        {
+            return new DmsCoordinate(string.Empty, string.Empty, string.Empty, string.Empty);
+        }
+
+        var absolute = Math.Abs(value.Value);
+        var degrees = (int)Math.Floor(absolute);
+        var totalMinutes = (absolute - degrees) * 60.0;
+        var minutes = (int)Math.Floor(totalMinutes);
+        var seconds = Math.Round((totalMinutes - minutes) * 60.0, 3, MidpointRounding.AwayFromZero);
+
+        if (seconds >= 60.0)
+        {
+            seconds = 0.0;
+            minutes++;
+        }
+
+        if (minutes >= 60)
+        {
+            minutes = 0;
+            degrees++;
+        }
+
+        var hemisphere = axis == CoordinateAxis.Latitude
+            ? (value.Value < 0 ? "S" : "N")
+            : (value.Value < 0 ? "W" : "E");
+
+        return new DmsCoordinate(
+            hemisphere,
+            degrees.ToString(CultureInfo.InvariantCulture),
+            minutes.ToString(CultureInfo.InvariantCulture),
+            seconds.ToString("0.###", CultureInfo.InvariantCulture));
+    }
+
+    private sealed record DmsCoordinate(string Hemisphere, string Degrees, string Minutes, string Seconds);
 
     private static int ParseInt(string raw, string fieldName)
     {
@@ -606,6 +657,13 @@ internal static class DashboardServer
 
         var forecastLatitudeDecimal = config.ForecastLatitude?.ToString("0.######", CultureInfo.InvariantCulture) ?? string.Empty;
         var forecastLongitudeDecimal = config.ForecastLongitude?.ToString("0.######", CultureInfo.InvariantCulture) ?? string.Empty;
+        var latitudeDms = ToDms(config.ForecastLatitude, CoordinateAxis.Latitude);
+        var longitudeDms = ToDms(config.ForecastLongitude, CoordinateAxis.Longitude);
+        var forecastCoordinateFormat = config.ForecastCoordinateFormat.Equals("dms", StringComparison.OrdinalIgnoreCase) ? "dms" : "dd";
+        var longitudeEastSelected = longitudeDms.Hemisphere == "E" ? "selected" : string.Empty;
+        var longitudeWestSelected = longitudeDms.Hemisphere == "W" ? "selected" : string.Empty;
+        var latitudeNorthSelected = latitudeDms.Hemisphere == "N" ? "selected" : string.Empty;
+        var latitudeSouthSelected = latitudeDms.Hemisphere == "S" ? "selected" : string.Empty;
         var forecastEnabledChecked = config.ForecastEnabled ? "checked" : string.Empty;
         var forecastEnsembleChecked = config.ForecastUseEnsemble ? "checked" : string.Empty;
 
@@ -681,16 +739,17 @@ internal static class DashboardServer
 
           <div class="panel">
             <h2>Overnight forecast settings</h2>
-            <p class="small">Coordinates are stored only in the local <code>temperhum.json</code>. Use either DD or DMS below, not both. Saved coordinates are normalized to decimal degrees. When forecasting is enabled they are sent to Open-Meteo to retrieve UK Met Office forecast data.</p>
-            <form method="post" action="/forecast-settings">
+            <p class="small">Coordinates are stored only in the local <code>temperhum.json</code>. DD and DMS below are two views of the same saved location. Edit either format; the last coordinate format you edit is used when saving, then both views are regenerated from the normalized coordinates. When forecasting is enabled the coordinates are sent to Open-Meteo to retrieve UK Met Office forecast data.</p>
+            <form method="post" action="/forecast-settings" id="forecastSettingsForm">
+              <input id="forecastCoordinateFormat" name="forecastCoordinateFormat" type="hidden" value="{{forecastCoordinateFormat}}">
               <label><input name="forecastEnabled" type="checkbox" {{forecastEnabledChecked}}>Enable overnight forecast</label>
               <label><input name="forecastUseEnsemble" type="checkbox" {{forecastEnsembleChecked}}>Use conservative UKMO 2 km ensemble P10 when available</label>
 
               <div class="coordinate-section">
                 <h3>DD (decimal degrees)*</h3>
                 <div class="row">
-                  <div><label for="forecastLongitudeDecimal">Longitude</label><input id="forecastLongitudeDecimal" name="forecastLongitudeDecimal" type="number" step="0.000001" min="-180" max="180" value="{{forecastLongitudeDecimal}}"></div>
-                  <div><label for="forecastLatitudeDecimal">Latitude</label><input id="forecastLatitudeDecimal" name="forecastLatitudeDecimal" type="number" step="0.000001" min="-90" max="90" value="{{forecastLatitudeDecimal}}"></div>
+                  <div><label for="forecastLongitudeDecimal">Longitude</label><input id="forecastLongitudeDecimal" name="forecastLongitudeDecimal" data-coordinate-format="dd" type="number" step="0.000001" min="-180" max="180" value="{{forecastLongitudeDecimal}}"></div>
+                  <div><label for="forecastLatitudeDecimal">Latitude</label><input id="forecastLatitudeDecimal" name="forecastLatitudeDecimal" data-coordinate-format="dd" type="number" step="0.000001" min="-90" max="90" value="{{forecastLatitudeDecimal}}"></div>
                 </div>
               </div>
 
@@ -698,21 +757,21 @@ internal static class DashboardServer
                 <h3>DMS (degrees, minutes, seconds)*</h3>
                 <div class="coordinate-line">
                   <div class="coordinate-name">Longitude</div>
-                  <div><label for="forecastLongitudeHemisphere">E / W</label><select id="forecastLongitudeHemisphere" name="forecastLongitudeHemisphere"><option value=""></option><option value="E">E</option><option value="W">W</option></select></div>
-                  <div><label for="forecastLongitudeDegrees">Degrees</label><div class="coordinate-part"><input id="forecastLongitudeDegrees" name="forecastLongitudeDegrees" type="number" min="0" max="180" step="1"><span class="coordinate-symbol">°</span></div></div>
-                  <div><label for="forecastLongitudeMinutes">Minutes</label><div class="coordinate-part"><input id="forecastLongitudeMinutes" name="forecastLongitudeMinutes" type="number" min="0" max="59" step="1"><span class="coordinate-symbol">′</span></div></div>
-                  <div><label for="forecastLongitudeSeconds">Seconds</label><div class="coordinate-part"><input id="forecastLongitudeSeconds" name="forecastLongitudeSeconds" type="number" min="0" max="59.999" step="0.001"><span class="coordinate-symbol">″</span></div></div>
+                  <div><label for="forecastLongitudeHemisphere">E / W</label><select id="forecastLongitudeHemisphere" name="forecastLongitudeHemisphere" data-coordinate-format="dms"><option value=""></option><option value="E" {{longitudeEastSelected}}>E</option><option value="W" {{longitudeWestSelected}}>W</option></select></div>
+                  <div><label for="forecastLongitudeDegrees">Degrees</label><div class="coordinate-part"><input id="forecastLongitudeDegrees" name="forecastLongitudeDegrees" data-coordinate-format="dms" type="number" min="0" max="180" step="1" value="{{longitudeDms.Degrees}}"><span class="coordinate-symbol">°</span></div></div>
+                  <div><label for="forecastLongitudeMinutes">Minutes</label><div class="coordinate-part"><input id="forecastLongitudeMinutes" name="forecastLongitudeMinutes" data-coordinate-format="dms" type="number" min="0" max="59" step="1" value="{{longitudeDms.Minutes}}"><span class="coordinate-symbol">′</span></div></div>
+                  <div><label for="forecastLongitudeSeconds">Seconds</label><div class="coordinate-part"><input id="forecastLongitudeSeconds" name="forecastLongitudeSeconds" data-coordinate-format="dms" type="number" min="0" max="59.999" step="0.001" value="{{longitudeDms.Seconds}}"><span class="coordinate-symbol">″</span></div></div>
                 </div>
                 <div class="coordinate-line">
                   <div class="coordinate-name">Latitude</div>
-                  <div><label for="forecastLatitudeHemisphere">N / S</label><select id="forecastLatitudeHemisphere" name="forecastLatitudeHemisphere"><option value=""></option><option value="N">N</option><option value="S">S</option></select></div>
-                  <div><label for="forecastLatitudeDegrees">Degrees</label><div class="coordinate-part"><input id="forecastLatitudeDegrees" name="forecastLatitudeDegrees" type="number" min="0" max="90" step="1"><span class="coordinate-symbol">°</span></div></div>
-                  <div><label for="forecastLatitudeMinutes">Minutes</label><div class="coordinate-part"><input id="forecastLatitudeMinutes" name="forecastLatitudeMinutes" type="number" min="0" max="59" step="1"><span class="coordinate-symbol">′</span></div></div>
-                  <div><label for="forecastLatitudeSeconds">Seconds</label><div class="coordinate-part"><input id="forecastLatitudeSeconds" name="forecastLatitudeSeconds" type="number" min="0" max="59.999" step="0.001"><span class="coordinate-symbol">″</span></div></div>
+                  <div><label for="forecastLatitudeHemisphere">N / S</label><select id="forecastLatitudeHemisphere" name="forecastLatitudeHemisphere" data-coordinate-format="dms"><option value=""></option><option value="N" {{latitudeNorthSelected}}>N</option><option value="S" {{latitudeSouthSelected}}>S</option></select></div>
+                  <div><label for="forecastLatitudeDegrees">Degrees</label><div class="coordinate-part"><input id="forecastLatitudeDegrees" name="forecastLatitudeDegrees" data-coordinate-format="dms" type="number" min="0" max="90" step="1" value="{{latitudeDms.Degrees}}"><span class="coordinate-symbol">°</span></div></div>
+                  <div><label for="forecastLatitudeMinutes">Minutes</label><div class="coordinate-part"><input id="forecastLatitudeMinutes" name="forecastLatitudeMinutes" data-coordinate-format="dms" type="number" min="0" max="59" step="1" value="{{latitudeDms.Minutes}}"><span class="coordinate-symbol">′</span></div></div>
+                  <div><label for="forecastLatitudeSeconds">Seconds</label><div class="coordinate-part"><input id="forecastLatitudeSeconds" name="forecastLatitudeSeconds" data-coordinate-format="dms" type="number" min="0" max="59.999" step="0.001" value="{{latitudeDms.Seconds}}"><span class="coordinate-symbol">″</span></div></div>
                 </div>
               </div>
 
-              <p class="small">* Complete one coordinate format only. Both latitude and longitude are required when forecasting is enabled.</p>
+              <p class="small">* DD and DMS are synchronized views of the same location. Edit either format; both latitude and longitude are required when forecasting is enabled.</p>
               <div class="row">
                 <div><label for="forecastHours">Horizon (hours)</label><input id="forecastHours" name="forecastHours" type="number" min="6" max="24" step="1" value="{{config.ForecastHours}}" required></div>
                 <div><label for="forecastRefreshMinutes">Refresh (minutes)</label><input id="forecastRefreshMinutes" name="forecastRefreshMinutes" type="number" min="5" max="180" step="1" value="{{config.ForecastRefreshMinutes}}" required></div>
@@ -752,6 +811,17 @@ internal static class DashboardServer
             <strong>Unique ID:</strong> <code>{{WebUtility.HtmlEncode(config.UniqueId)}}</code><br>
             Configuration: <code>{{WebUtility.HtmlEncode(Path.Combine(AppContext.BaseDirectory, "temperhum.json"))}}</code>
           </div>
+
+          <script>
+            (() => {
+              const format = document.getElementById('forecastCoordinateFormat');
+              document.querySelectorAll('[data-coordinate-format]').forEach(element => {
+                const selectFormat = () => { format.value = element.dataset.coordinateFormat; };
+                element.addEventListener('input', selectFormat);
+                element.addEventListener('change', selectFormat);
+              });
+            })();
+          </script>
         </body>
         </html>
         """;
