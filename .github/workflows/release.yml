@@ -53,10 +53,16 @@ jobs:
         run: |
           $configPath = Join-Path $PWD 'publish/win-x64/temperhum.json'
           $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          if ($config.deviceProfile -ne 'auto') { throw 'Release configuration must default deviceProfile to auto.' }
           $config.autoConnect = $false
           $config | ConvertTo-Json | Set-Content $configPath
 
           $exe = Join-Path $PWD 'publish/win-x64/TemperHumAlpaca.exe'
+          $probe = (& $exe --probe --vid 413D --pid 2107 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw '--probe returned a non-zero exit code.' }
+          if ($probe -notmatch 'HID probe') { throw '--probe output is missing its diagnostic heading.' }
+          if ($probe -notmatch 'no TEMPerHUM measurement command is sent') { throw '--probe did not report its read-only safety behaviour.' }
+
           $process = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
 
           try {
@@ -66,6 +72,7 @@ jobs:
                 $description = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/description' -TimeoutSec 2
                 $driverVersion = Invoke-RestMethod 'http://127.0.0.1:11111/api/v1/observingconditions/0/driverversion' -TimeoutSec 2
                 $dashboard = Invoke-WebRequest 'http://127.0.0.1:11112/dashboard' -UseBasicParsing -TimeoutSec 2
+                $status = Invoke-RestMethod 'http://127.0.0.1:11112/api/v1/status' -TimeoutSec 2
                 $ready = $true
                 break
               } catch {
@@ -77,6 +84,8 @@ jobs:
             if ($description.Value.ManufacturerVersion -ne '${{ steps.version.outputs.version }}') { throw 'Management version does not match project version.' }
             if ($driverVersion.Value -ne '${{ steps.version.outputs.version }}') { throw 'DriverVersion does not match project version.' }
             if ($dashboard.StatusCode -ne 200) { throw 'Dashboard did not return HTTP 200.' }
+            if ($dashboard.Content -notmatch 'AstroZap estimate') { throw 'Dashboard is missing AstroZap guidance.' }
+            if ($status.version -ne '${{ steps.version.outputs.version }}') { throw 'Local status API version does not match project version.' }
           }
           finally {
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
