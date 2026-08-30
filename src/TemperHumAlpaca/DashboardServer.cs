@@ -28,10 +28,20 @@ internal static class DashboardServer
         app.MapGet("/dashboard", (HttpRequest request) =>
             Results.Content(BuildPage(sensor, config, advisor, request.Query["message"].ToString()), "text/html; charset=utf-8"));
 
-        // Local machine-readable endpoint intended for lightweight integrations such
-        // as a future N.I.N.A. plugin. It deliberately lives on the loopback-only
+        // Local machine-readable endpoints intended for lightweight integrations such
+        // as a future N.I.N.A. plugin. They deliberately live on the loopback-only
         // dashboard listener rather than extending the standard Alpaca contract.
         app.MapGet("/api/v1/status", () => BuildStatus(sensor, advisor));
+        app.MapGet("/api/v1/history", () => Results.Json(new
+        {
+            version = AppInfo.Version,
+            windowMinutes = 120,
+            samples = advisor.GetHistory().Select(point => new
+            {
+                at = point.At,
+                dewMarginC = point.DewMarginC
+            })
+        }));
 
         app.MapPost("/calibrate", async (HttpRequest request) =>
         {
@@ -162,6 +172,7 @@ internal static class DashboardServer
                 version = AppInfo.Version,
                 connected = false,
                 connecting = sensor.Connecting,
+                historySampleCount = advisor.GetHistory().Count,
                 lastError = sensor.LastError
             });
         }
@@ -184,6 +195,7 @@ internal static class DashboardServer
                 astroZapKnobPosition = advice.KnobPosition,
                 dewMarginTrend = advice.Trend,
                 dewMarginTrendCPerHour = advice.DewMarginTrendCPerHour,
+                historySampleCount = advisor.GetHistory().Count,
                 advisory = advice.Note
             });
         }
@@ -193,6 +205,7 @@ internal static class DashboardServer
             {
                 version = AppInfo.Version,
                 connected = sensor.Connected,
+                historySampleCount = advisor.GetHistory().Count,
                 error = ex.Message
             });
         }
@@ -230,6 +243,74 @@ internal static class DashboardServer
         var tempPath = path + ".tmp";
         File.WriteAllText(tempPath, JsonSerializer.Serialize(config, JsonOptions));
         File.Move(tempPath, path, overwrite: true);
+    }
+
+    private static string BuildHistoryChart(IReadOnlyList<DewHistoryPoint> history)
+    {
+        if (history.Count < 2)
+        {
+            return $"<div class=\"history-empty\">Collecting dew-margin history… {history.Count} sample{(history.Count == 1 ? string.Empty : "s")} recorded.</div>";
+        }
+
+        const double width = 900;
+        const double height = 220;
+        const double left = 48;
+        const double right = 14;
+        const double top = 14;
+        const double bottom = 32;
+        var plotWidth = width - left - right;
+        var plotHeight = height - top - bottom;
+
+        var firstAt = history[0].At;
+        var lastAt = history[^1].At;
+        var durationSeconds = Math.Max(1, (lastAt - firstAt).TotalSeconds);
+        var minMargin = Math.Min(0, Math.Floor(history.Min(point => point.DewMarginC) - 0.5));
+        var maxMargin = Math.Max(8, Math.Ceiling(history.Max(point => point.DewMarginC) + 0.5));
+        var range = Math.Max(1, maxMargin - minMargin);
+
+        double X(DateTimeOffset at) => left + ((at - firstAt).TotalSeconds / durationSeconds) * plotWidth;
+        double Y(double margin) => top + ((maxMargin - margin) / range) * plotHeight;
+        string F(double value) => value.ToString("0.0", CultureInfo.InvariantCulture);
+
+        var points = string.Join(" ", history.Select(point => $"{F(X(point.At))},{F(Y(point.DewMarginC))}"));
+        var svg = new System.Text.StringBuilder();
+        svg.Append($"<svg class=\"history-chart\" viewBox=\"0 0 {F(width)} {F(height)}\" role=\"img\" aria-label=\"Dew margin history\">");
+
+        foreach (var threshold in new[] { 0.0, 1.0, 2.0, 3.0, 5.0, 8.0 })
+        {
+            if (threshold < minMargin || threshold > maxMargin)
+            {
+                continue;
+            }
+
+            var y = Y(threshold);
+            svg.Append($"<line class=\"history-grid\" x1=\"{F(left)}\" y1=\"{F(y)}\" x2=\"{F(width - right)}\" y2=\"{F(y)}\" />");
+            svg.Append($"<text class=\"history-label\" x=\"{F(left - 7)}\" y=\"{F(y + 4)}\" text-anchor=\"end\">{threshold:0}°</text>");
+        }
+
+        svg.Append($"<polyline class=\"history-line\" points=\"{points}\" />");
+        svg.Append($"<circle class=\"history-dot\" cx=\"{F(X(lastAt))}\" cy=\"{F(Y(history[^1].DewMarginC))}\" r=\"3.5\" />");
+        svg.Append($"<text class=\"history-label\" x=\"{F(left)}\" y=\"{F(height - 7)}\">{firstAt.ToLocalTime():HH:mm}</text>");
+        svg.Append($"<text class=\"history-label\" x=\"{F(width - right)}\" y=\"{F(height - 7)}\" text-anchor=\"end\">{lastAt.ToLocalTime():HH:mm}</text>");
+        svg.Append("</svg>");
+        return svg.ToString();
+    }
+
+    private static string BuildHistorySummary(IReadOnlyList<DewHistoryPoint> history)
+    {
+        if (history.Count == 0)
+        {
+            return "No samples yet. History starts when the dashboard service starts and is kept in memory for two hours.";
+        }
+
+        var span = history[^1].At - history[0].At;
+        var spanText = span.TotalMinutes < 1
+            ? "less than a minute"
+            : span.TotalMinutes < 60
+                ? $"{span.TotalMinutes:F0} min"
+                : $"{span.TotalHours:F1} hr";
+
+        return $"{history.Count} samples · {spanText} shown · current {history[^1].DewMarginC:F2} °C · in-memory only";
     }
 
     private static string BuildPage(SensorService sensor, AppConfig config, DewAdvisor advisor, string message)
@@ -288,6 +369,10 @@ internal static class DashboardServer
             status = "Disconnected";
         }
 
+        var history = advisor.GetHistory();
+        var historyChart = BuildHistoryChart(history);
+        var historySummary = BuildHistorySummary(history);
+
         var lastError = string.IsNullOrWhiteSpace(sensor.LastError)
             ? "None"
             : WebUtility.HtmlEncode(sensor.LastError);
@@ -307,12 +392,13 @@ internal static class DashboardServer
           <style>
             :root{color-scheme:light dark;--border:#8a8a8a55;--panel:#8881;--good:#2e9b55;--warn:#d18a00}
             body{font-family:Segoe UI,Arial,sans-serif;max-width:1060px;margin:32px auto;padding:0 20px;line-height:1.45}
-            h1{margin-bottom:4px}.sub{opacity:.7;margin-top:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:22px 0}
+            h1{margin-bottom:4px}h2{margin-top:0}.sub{opacity:.7;margin-top:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:22px 0}
             .card,.panel{border:1px solid var(--border);border-radius:12px;background:var(--panel);padding:16px}.label{font-size:.86rem;opacity:.7}.value{font-size:1.8rem;font-weight:650;margin-top:4px}.detail{font-size:.85rem;opacity:.75;margin-top:4px}
             .panel{margin:14px 0}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}label{display:block;font-size:.88rem;margin-bottom:4px}
             input{box-sizing:border-box;width:100%;padding:9px;border:1px solid var(--border);border-radius:7px}button{padding:9px 14px;border-radius:7px;border:1px solid var(--border);cursor:pointer;margin-top:10px}
             code{background:#8882;padding:2px 5px;border-radius:4px}.notice{border-left:4px solid var(--good);padding:10px 12px;background:#2e9b5518;margin:16px 0;border-radius:6px}
             .small{font-size:.88rem;opacity:.75}.status{font-weight:650}.advisory{border-left:4px solid var(--warn)}
+            .history-chart{width:100%;height:auto;min-height:180px;display:block;margin-top:8px}.history-grid{stroke:currentColor;stroke-opacity:.15;stroke-width:1}.history-line{fill:none;stroke:currentColor;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}.history-dot{fill:currentColor}.history-label{fill:currentColor;opacity:.62;font-size:12px}.history-empty{padding:28px 8px;text-align:center;opacity:.7}
           </style>
         </head>
         <body>
@@ -330,6 +416,12 @@ internal static class DashboardServer
           <div class="grid">
             <div class="card"><div class="label">Dew risk</div><div class="value">{{dewRisk}}</div></div>
             <div class="card"><div class="label">AstroZap estimate</div><div class="value">{{heaterPower}}</div><div class="detail">Knob: {{knobPosition}}</div></div>
+          </div>
+
+          <div class="panel">
+            <h2>Dew margin history</h2>
+            <div class="small">{{historySummary}}</div>
+            {{historyChart}}
           </div>
 
           <div class="panel advisory">
@@ -369,7 +461,7 @@ internal static class DashboardServer
 
           <div class="panel small">
             <strong>Alpaca:</strong> HTTP {{config.AlpacaPort}}, discovery UDP {{config.DiscoveryPort}}, ObservingConditions 0<br>
-            <strong>Dashboard:</strong> localhost:{{config.DashboardPort}} · <strong>status API:</strong> <code>/api/v1/status</code><br>
+            <strong>Dashboard:</strong> localhost:{{config.DashboardPort}} · <strong>status API:</strong> <code>/api/v1/status</code> · <strong>history API:</strong> <code>/api/v1/history</code><br>
             <strong>Unique ID:</strong> <code>{{WebUtility.HtmlEncode(config.UniqueId)}}</code><br>
             Configuration: <code>{{WebUtility.HtmlEncode(Path.Combine(AppContext.BaseDirectory, "temperhum.json"))}}</code>
           </div>
