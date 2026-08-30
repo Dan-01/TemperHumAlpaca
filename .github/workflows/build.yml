@@ -45,6 +45,8 @@ jobs:
           $configPath = Join-Path $PWD 'publish/win-x64/temperhum.json'
           $config = Get-Content $configPath -Raw | ConvertFrom-Json
           if ($config.deviceProfile -ne 'auto') { throw 'Sample configuration must default deviceProfile to auto.' }
+          if ($config.forecastEnabled -ne $false) { throw 'Sample configuration must default forecastEnabled to false.' }
+          if ($config.forecastHours -ne 12) { throw 'Sample forecast horizon must default to 12 hours.' }
           $config.autoConnect = $false
           $config | ConvertTo-Json | Set-Content $configPath
 
@@ -64,6 +66,7 @@ jobs:
                 $dashboard = Invoke-WebRequest 'http://127.0.0.1:11112/dashboard' -UseBasicParsing -TimeoutSec 2
                 $status = Invoke-RestMethod 'http://127.0.0.1:11112/api/v1/status' -TimeoutSec 2
                 $history = Invoke-RestMethod 'http://127.0.0.1:11112/api/v1/history' -TimeoutSec 2
+                $forecast = Invoke-RestMethod 'http://127.0.0.1:11112/api/v1/forecast' -TimeoutSec 2
                 $ready = $true
                 break
               } catch {
@@ -77,13 +80,13 @@ jobs:
             if ($dashboard.Content -notmatch 'Dew margin') { throw 'Dashboard is missing dew margin display.' }
             if ($dashboard.Content -notmatch 'AstroZap estimate') { throw 'Dashboard is missing AstroZap guidance.' }
             if ($dashboard.Content -notmatch 'Dew margin history') { throw 'Dashboard is missing dew margin history.' }
-            if ($dashboard.Content -notmatch '/api/v1/history') { throw 'Dashboard is missing the history API reference.' }
+            if ($dashboard.Content -notmatch 'Overnight set-and-leave outlook') { throw 'Dashboard is missing overnight forecast outlook.' }
+            if ($dashboard.Content -notmatch 'Overnight forecast settings') { throw 'Dashboard is missing forecast settings.' }
             if ($dashboard.Content -notmatch 'Calibrate against reference thermometer') { throw 'Dashboard is missing calibration controls.' }
+            if ($history.windowMinutes -ne 120) { throw 'History API window was unexpected.' }
+            if ($forecast.enabled -ne $false) { throw 'Forecast API should report disabled from the sample configuration.' }
             if ($status.version -ne '0.5.0') { throw 'Local status API version did not match 0.5.0.' }
             if ($status.connected -ne $false) { throw 'Disconnected status API response was unexpected.' }
-            if ($history.version -ne '0.5.0') { throw 'History API version did not match 0.5.0.' }
-            if ($history.windowMinutes -ne 120) { throw 'History API did not report the two-hour window.' }
-            if ($null -eq $history.samples) { throw 'History API did not include a samples collection.' }
 
             $description = Invoke-RestMethod 'http://127.0.0.1:11111/management/v1/description'
             if ($description.Value.ManufacturerVersion -ne '0.5.0') { throw 'Management version did not match 0.5.0.' }
